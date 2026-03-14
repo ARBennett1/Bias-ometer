@@ -308,7 +308,7 @@ class _ProgressDiarizer:
             if resampler:
                 seg = resampler(seg)
 
-            audio_np = seg.mean(0).numpy().astype(float)
+            audio_np = seg.mean(0).numpy().astype(np.float32)
             if len(audio_np) < 8_000:
                 turn.transcript = ""
             else:
@@ -517,8 +517,9 @@ def _run_diarization(
             source_name=job.source_name or wav_path.stem,
         )
 
+        # After:
         if job.source_type == "youtube":
-            result.source_file = job.source_ref
+            result.source_file = job.source_name or job.job_id  # e.g. "YouTube · BBC News"
 
         _update_job(job_id, progress_pct=saving_band[0], progress_stage="saving",
                     progress_detail="Writing to catalogue…", progress="Saving…")
