@@ -1,0 +1,30 @@
+# ── Core diarization ────────────────────────────────────────────────────────
+pyannote.audio>=3.3.0
+torch>=2.2.0
+torchaudio>=2.2.0
+
+# ── Transcription ────────────────────────────────────────────────────────────
+openai-whisper>=20231117
+
+# ── Sentiment ────────────────────────────────────────────────────────────────
+transformers>=4.40.0
+
+# ── Audio I/O helpers ────────────────────────────────────────────────────────
+soundfile>=0.12.1
+librosa>=0.10.1
+ffmpeg-python>=0.2.0   # also requires: brew install ffmpeg
+
+# ── YouTube source ───────────────────────────────────────────────────────────
+yt-dlp>=2024.1.0       # actively maintained youtube-dl fork
+
+# ── HuggingFace hub ──────────────────────────────────────────────────────────
+huggingface-hub>=0.23.0
+numpy>=1.26.0
+
+# ── Environment / config ─────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── REST API (api.py) ────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9   # required by FastAPI for Form / UploadFile parsing
