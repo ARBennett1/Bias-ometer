@@ -436,6 +436,71 @@ def cmd_link(args: argparse.Namespace) -> None:
     print(f"Linked {args.ephemeral} → {args.catalogue}  (session: {args.session})")
 
 
+def cmd_review(args: argparse.Namespace) -> None:
+    import socket
+    import threading
+    import time
+    import webbrowser
+    import urllib.request
+
+    port = args.port
+
+    def _port_open(p: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", p), timeout=0.5):
+                return True
+        except OSError:
+            return False
+
+    if not _port_open(port):
+        try:
+            import uvicorn
+        except ImportError:
+            sys.exit("uvicorn is not installed. Run: pip install uvicorn[standard]")
+
+        log.info(f"Starting API server on port {port}…")
+        t = threading.Thread(
+            target=uvicorn.run,
+            kwargs={
+                "app": "api:app",
+                "host": "127.0.0.1",
+                "port": port,
+                "log_level": "warning",
+            },
+            daemon=True,
+        )
+        t.start()
+
+        # Wait up to 3 s for the server to be ready
+        deadline = time.time() + 3.0
+        ready = False
+        while time.time() < deadline:
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=0.5)
+                ready = True
+                break
+            except Exception:
+                time.sleep(0.1)
+
+        if not ready:
+            log.warning("Server did not respond to health check in 3 s — opening browser anyway")
+    else:
+        log.info(f"Server already running on port {port}")
+
+    url = f"http://localhost:{port}/review"
+    if args.session_id:
+        url += f"?session={args.session_id}"
+
+    if not args.no_open:
+        webbrowser.open(url)
+
+    print(f"Review UI running at {url}  (Ctrl+C to stop)")
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+
+
 # ─── Argument parser ──────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -538,6 +603,12 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument("--ephemeral", required=True, help="e.g. SPEAKER_00")
     lk.add_argument("--catalogue", required=True, help="e.g. SPK-0001")
 
+    # review ─────────────────────────────────────────────────────────────────
+    rv = sub.add_parser("review", help="Open the speaker review UI in a browser")
+    rv.add_argument("session_id", nargs="?", default=None, help="Session ID to open (optional)")
+    rv.add_argument("--port", type=int, default=8000, help="Port to run the server on (default: 8000)")
+    rv.add_argument("--no-open", action="store_true", help="Start the server but do not open a browser tab")
+
     return p
 
 
@@ -553,4 +624,5 @@ if __name__ == "__main__":
         "add-speaker": cmd_add_speaker,
         "update-speaker": cmd_update_speaker,
         "link": cmd_link,
+        "review": cmd_review,
     }[args.cmd](args)

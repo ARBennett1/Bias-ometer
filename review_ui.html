@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bias-ometer Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #6366f1;
+    --success: #22c55e; --warning: #f59e0b; --error: #ef4444;
+    --radius: 8px;
+  }
+  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--accent); }
+  #session-select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  #spinner { display: none; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin-left: auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .panels { display: flex; flex: 1; overflow: hidden; }
+  /* Left Panel */
+  .left-panel { width: 30%; min-width: 280px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .panel-header { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .panel-header strong { color: var(--text); font-size: 14px; display: block; margin-bottom: 2px; }
+  .speakers-list { overflow-y: auto; flex: 1; padding: 8px; }
+  .speaker-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s; }
+  .speaker-card:hover, .speaker-card.active { border-color: var(--accent); }
+  .speaker-card-top { display: flex; gap: 10px; align-items: flex-start; }
+  .speaker-thumb { width: 56px; height: 56px; border-radius: 6px; object-fit: cover; background: var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: var(--muted); overflow: hidden; }
+  .speaker-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
+  .speaker-info { flex: 1; min-width: 0; }
+  .speaker-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .speaker-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .speaker-eph { font-size: 11px; color: var(--accent); margin-top: 1px; font-family: monospace; }
+  .confidence-chip { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; margin-top: 4px; }
+  .conf-high { background: #16a34a22; color: #22c55e; border: 1px solid #22c55e44; }
+  .conf-medium { background: #d97706222; color: #f59e0b; border: 1px solid #f59e0b44; }
+  .conf-low { background: #94a3b822; color: #94a3b8; border: 1px solid #94a3b844; }
+  .time-bar-wrap { margin-top: 8px; }
+  .time-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .time-bar-fill { height: 100%; border-radius: 2px; }
+  .time-label { font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .card-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 11px; cursor: pointer; transition: background 0.15s; white-space: nowrap; }
+  .btn:hover { background: var(--border); }
+  .btn-success { border-color: #22c55e44; color: #22c55e; }
+  .btn-danger { border-color: #ef444444; color: #ef4444; }
+  .btn-merge { border-color: #6366f144; color: #6366f1; }
+  .inline-form { margin-top: 10px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); display: none; }
+  .inline-form.open { display: block; }
+  .inline-form input, .inline-form select, .inline-form textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-size: 12px; margin-bottom: 6px; }
+  .inline-form label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 2px; }
+  .inline-form-actions { display: flex; gap: 6px; margin-top: 4px; }
+  /* Right Panel */
+  .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .transcript-header { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); flex-shrink: 0; display: flex; align-items: center; gap: 12px; }
+  .transcript-list { overflow-y: auto; flex: 1; padding: 8px 16px; }
+  .turn-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: var(--radius); margin-bottom: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background 0.1s; }
+  .turn-row:hover { background: var(--surface); }
+  .turn-row.overridden { border-left-color: var(--accent); }
+  .turn-row.focused { background: var(--surface); outline: 1px solid var(--accent); }
+  .turn-ts { font-size: 11px; color: var(--muted); white-space: nowrap; font-family: monospace; flex-shrink: 0; padding-top: 2px; }
+  .speaker-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+  .turn-body { flex: 1; min-width: 0; }
+  .turn-speaker { font-size: 12px; font-weight: 500; margin-bottom: 3px; }
+  .turn-speaker .orig { text-decoration: line-through; color: var(--muted); margin-right: 6px; }
+  .turn-transcript { font-size: 13px; color: var(--text); line-height: 1.5; }
+  .turn-chips { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; align-items: center; }
+  .sentiment-chip { padding: 1px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; }
+  .sent-positive { background: #16a34a22; color: #22c55e; }
+  .sent-neutral { background: #94a3b822; color: #94a3b8; }
+  .sent-negative { background: #ef444422; color: #ef4444; }
+  .turn-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .icon-btn { width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: color 0.15s; }
+  .icon-btn:hover { color: var(--text); border-color: var(--accent); }
+  .reassign-wrap { position: relative; }
+  .reassign-select { background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px; font-size: 11px; display: none; }
+  .reassign-select.open { display: inline-block; }
+  audio { display: none; }
+  .turn-row.deleted { opacity: 0.4; }
+  .turn-row.deleted .turn-transcript { text-decoration: line-through; color: var(--muted); }
+  .turn-row.deleted:hover { opacity: 0.65; }
+  .deleted-chip { padding: 1px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; background: #ef444422; color: #ef4444; border: 1px solid #ef444444; }
+  .icon-btn.btn-delete:hover { color: #ef4444; border-color: #ef444466; }
+  .icon-btn.btn-restore:hover { color: #22c55e; border-color: #22c55e66; }
+  .turn-row.filtered-out { display: none; }
+  .speaker-card.filter-active { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .btn-filter { border-color: #6366f133; color: var(--muted); }
+  .btn-filter.active { background: #6366f122; border-color: var(--accent); color: var(--accent); }
+  .filter-bar { display: none; align-items: center; gap: 8px; padding: 6px 16px; background: #6366f111; border-bottom: 1px solid #6366f133; font-size: 12px; color: var(--accent); flex-shrink: 0; }
+  .filter-bar.visible { display: flex; }
+  .filter-bar button { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1; }
+  .filter-bar button:hover { color: var(--text); }
+  /* Toast */
+  #toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
+  .toast { padding: 10px 16px; border-radius: var(--radius); font-size: 13px; min-width: 200px; max-width: 350px; animation: fadeIn 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  .toast-success { background: #16a34a; color: white; }
+  .toast-error { background: #dc2626; color: white; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 999; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 400px; max-width: 90vw; }
+  .modal h3 { font-size: 15px; margin-bottom: 16px; }
+  .modal input, .modal select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 7px 10px; font-size: 13px; margin-bottom: 10px; }
+  .modal label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+  .btn-primary:hover { background: #4f46e5; }
+  .search-results { margin-bottom: 10px; max-height: 200px; overflow-y: auto; }
+  .search-result-item { padding: 7px 10px; background: var(--bg); border-radius: 4px; cursor: pointer; font-size: 12px; margin-bottom: 4px; border: 1px solid var(--border); }
+  .search-result-item:hover { border-color: var(--accent); }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Bias-ometer Review</h1>
+  <select id="session-select"><option>Loading sessions…</option></select>
+  <div id="spinner"></div>
+</header>
+
+<div class="panels">
+  <div class="left-panel">
+    <div class="panel-header">
+      <strong id="session-label">—</strong>
+      <span id="session-duration"></span>
+    </div>
+    <div class="speakers-list" id="speakers-list"></div>
+  </div>
+  <div class="right-panel">
+    <div class="transcript-header" id="transcript-header">
+      Select a session to begin
+    </div>
+    <div class="filter-bar" id="filter-bar">
+      <span id="filter-label"></span>
+      <button onclick="clearFilter()" title="Clear filter">✕</button>
+    </div>
+    <div class="transcript-list" id="transcript-list"></div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<!-- Confirm Speaker Modal -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal">
+    <h3>Confirm Speaker Identity</h3>
+    <label>Name</label><input type="text" id="confirm-name" placeholder="Full name">
+    <label>Affiliation</label><input type="text" id="confirm-affiliation" placeholder="e.g. BBC News">
+    <label>Role</label><input type="text" id="confirm-role" placeholder="e.g. Political Correspondent">
+    <label>Notes</label><input type="text" id="confirm-notes" placeholder="Optional notes">
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('confirm-modal')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitConfirm()">Save & Link</button>
+    </div>
+  </div>
+</div>
+
+<!-- Wrong Speaker / Search Modal -->
+<div class="modal-overlay" id="search-modal">
+  <div class="modal">
+    <h3>Find Existing Speaker</h3>
+    <label>Search by name</label>
+    <input type="text" id="search-input" placeholder="Type to search…" oninput="doSearch()">
+    <div class="search-results" id="search-results"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal('search-modal')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let currentSession = null;
+let reviewData = null;
+let activeFilter = null;
+let currentlyPlayingIdx = null;
+let _confirmEphId = null;
+let _searchEphId = null;
+let _selectedCatalogueId = null;
+
+const SPEAKER_COLORS = [
+  '#6366f1','#22c55e','#f59e0b','#ec4899','#14b8a6',
+  '#f97316','#a78bfa','#34d399','#fb923c','#38bdf8',
+];
+const speakerColorMap = {};
+
+function getSpeakerColor(ephId) {
+  if (!speakerColorMap[ephId]) {
+    const keys = Object.keys(speakerColorMap);
+    speakerColorMap[ephId] = SPEAKER_COLORS[keys.length % SPEAKER_COLORS.length];
+  }
+  return speakerColorMap[ephId];
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2,'0')}`;
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+function toast(msg, type='success') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ── Spinner ────────────────────────────────────────────────────────────────────
+function setLoading(on) {
+  document.getElementById('spinner').style.display = on ? 'block' : 'none';
+}
+
+// ── Modal helpers ──────────────────────────────────────────────────────────────
+function openModal(id) { document.getElementById(id).classList.add('open'); }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ── API helpers ────────────────────────────────────────────────────────────────
+async function api(method, path, formData) {
+  const opts = { method };
+  if (formData) opts.body = formData;
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
+}
+
+// ── Session loading ────────────────────────────────────────────────────────────
+async function loadSessions() {
+  setLoading(true);
+  try {
+    const sessions = await api('GET', '/sessions');
+    const sel = document.getElementById('session-select');
+    sel.innerHTML = sessions.map(s =>
+      `<option value="${s.session_id}">${s.source_name || s.session_id} — ${s.processed_at?.slice(0,10)}</option>`
+    ).join('');
+    if (sessions.length > 0) {
+      await loadReview(sessions[0].session_id);
+    }
+  } catch (e) {
+    toast('Failed to load sessions: ' + e.message, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+document.getElementById('session-select').addEventListener('change', async e => {
+  await loadReview(e.target.value);
+});
+
+async function loadReview(sessionId) {
+  setLoading(true);
+  if (sessionId !== currentSession) {
+    activeFilter = null;
+    document.getElementById('filter-bar').classList.remove('visible');
+  }
+  currentSession = sessionId;
+  Object.keys(speakerColorMap).forEach(k => delete speakerColorMap[k]);
+  try {
+    reviewData = await api('GET', `/review/${sessionId}`);
+    renderUI();
+  } catch (e) {
+    toast('Failed to load session: ' + e.message, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────────
+function renderUI() {
+  if (!reviewData) return;
+  const { session, speakers, all_ephemeral_ids } = reviewData;
+
+  // Pre-assign colors
+  all_ephemeral_ids.forEach(id => getSpeakerColor(id));
+
+  document.getElementById('session-label').textContent = session.source_name || session.session_id;
+  document.getElementById('session-duration').textContent =
+    `${fmtTime(session.total_duration)}  ·  ${session.num_speakers} speakers`;
+
+  // Stats
+  const totalTurns = speakers.reduce((a, s) => a + s.turn_count, 0);
+  const allTurnsFlat = speakers.flatMap(s => s.turns);
+  const totalOverrides = allTurnsFlat.filter(t => t.overridden && !t.deleted).length;
+  const totalDeleted = allTurnsFlat.filter(t => t.deleted).length;
+  const deletedPart = totalDeleted > 0 ? ` · ${totalDeleted} deleted` : '';
+  document.getElementById('transcript-header').textContent =
+    `${totalTurns} turns · ${session.num_speakers} speakers · ${totalOverrides} override${totalOverrides !== 1 ? 's' : ''}${deletedPart}`;
+
+  renderSpeakers(speakers, session);
+  renderTranscript(speakers, all_ephemeral_ids, session);
+  if (activeFilter) applyFilter(activeFilter);
+}
+
+function renderSpeakers(speakers, session) {
+  const container = document.getElementById('speakers-list');
+  const total = session.total_duration || 1;
+
+  container.innerHTML = speakers.map(sp => {
+    const color = getSpeakerColor(sp.ephemeral_id);
+    const displayName = sp.display_name || sp.ephemeral_id;
+    const initials = sp.ephemeral_id.replace('SPEAKER_', 'S');
+    const pct = ((sp.total_speaking_time / total) * 100).toFixed(1);
+
+    let thumbHtml = '';
+    if (sp.frame_url) {
+      thumbHtml = `<img src="${sp.frame_url}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <span style="display:none;width:100%;height:100%;align-items:center;justify-content:center">${initials}</span>`;
+    } else {
+      thumbHtml = `<span>${initials}</span>`;
+    }
+
+    let badgeHtml = '';
+    if (sp.suggested_name && sp.confidence) {
+      const cls = sp.confidence === 'high' ? 'conf-high' : sp.confidence === 'medium' ? 'conf-medium' : 'conf-low';
+      badgeHtml = `<span class="confidence-chip ${cls}">${sp.suggested_name} [${sp.confidence}]</span>`;
+    }
+
+    const mergeOptions = speakers
+      .filter(s => s.ephemeral_id !== sp.ephemeral_id)
+      .map(s => `<option value="${s.ephemeral_id}">${s.display_name || s.ephemeral_id}</option>`)
+      .join('');
+
+    return `
+    <div class="speaker-card" id="card-${sp.ephemeral_id}" onclick="scrollToSpeaker('${sp.ephemeral_id}')">
+      <div class="speaker-card-top">
+        <div class="speaker-thumb" style="border: 2px solid ${color}">${thumbHtml}</div>
+        <div class="speaker-info">
+          <div class="speaker-name">${displayName}</div>
+          ${sp.affiliation || sp.role ? `<div class="speaker-meta">${[sp.affiliation, sp.role].filter(Boolean).join(' · ')}</div>` : ''}
+          <div class="speaker-eph">${sp.ephemeral_id}</div>
+          ${badgeHtml}
+        </div>
+      </div>
+      <div class="time-bar-wrap">
+        <div class="time-bar"><div class="time-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+        <div class="time-label">${sp.total_speaking_time.toFixed(1)}s · ${sp.turn_count} turns · ${pct}%</div>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-success" onclick="event.stopPropagation();openConfirm('${sp.ephemeral_id}')">✓ Confirm</button>
+        <button class="btn btn-danger" onclick="event.stopPropagation();openSearch('${sp.ephemeral_id}')">✗ Wrong</button>
+        <button class="btn btn-merge" onclick="event.stopPropagation();toggleMerge('${sp.ephemeral_id}')">⇒ Merge…</button>
+        <button class="btn btn-filter" id="filter-btn-${sp.ephemeral_id}" onclick="event.stopPropagation();toggleFilter('${sp.ephemeral_id}')">⊙ Filter</button>
+      </div>
+      <div class="inline-form" id="merge-form-${sp.ephemeral_id}">
+        <label>Merge all turns of ${sp.ephemeral_id} into:</label>
+        <select id="merge-target-${sp.ephemeral_id}">${mergeOptions}</select>
+        <div class="inline-form-actions">
+          <button class="btn" onclick="toggleMerge('${sp.ephemeral_id}')">Cancel</button>
+          <button class="btn btn-primary" onclick="submitMerge('${sp.ephemeral_id}')">Merge</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderTranscript(speakers, allIds, session) {
+  // Build flat sorted turn list with speaker info
+  const allTurns = [];
+  const speakerLookup = {};
+  speakers.forEach(sp => {
+    speakerLookup[sp.ephemeral_id] = sp;
+    sp.turns.forEach(t => allTurns.push({ ...t, _speaker: sp }));
+  });
+  allTurns.sort((a, b) => a.index - b.index);
+
+  const container = document.getElementById('transcript-list');
+  container.innerHTML = allTurns.map(turn => {
+    const effColor = getSpeakerColor(turn.effective_speaker);
+    const origColor = getSpeakerColor(turn.original_speaker);
+    const effSp = speakerLookup[turn.effective_speaker];
+    const effName = (effSp?.display_name) || turn.effective_speaker;
+    const origName = turn.original_speaker;
+
+    const sentClass = turn.sentiment === 'positive' ? 'sent-positive'
+      : turn.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
+
+    const speakerLabel = turn.overridden
+      ? `<span class="orig">${origName}</span><strong style="color:${effColor}">${effName}</strong>`
+      : `<span style="color:${effColor}">${effName}</span>`;
+
+    const selectOptions = allIds.map(id => {
+      const sp = speakerLookup[id];
+      return `<option value="${id}" ${id === turn.effective_speaker ? 'selected' : ''}>${sp?.display_name || id}</option>`;
+    }).join('');
+
+    const rowClasses = ['turn-row', turn.overridden && !turn.deleted ? 'overridden' : '', turn.deleted ? 'deleted' : ''].filter(Boolean).join(' ');
+    const borderStyle = (turn.overridden && !turn.deleted) ? `border-left-color:${effColor}` : '';
+
+    const actionButtons = turn.deleted
+      ? `<button class="icon-btn btn-restore" title="Restore turn" onclick="restoreTurn(${turn.index})">↩</button>`
+      : `<div class="reassign-wrap">
+          <button class="icon-btn" title="Reassign (R)" onclick="toggleReassign(${turn.index})">↺</button>
+          <select class="reassign-select" id="reassign-${turn.index}"
+            onchange="submitReassign(${turn.index}, this.value)"
+            onkeydown="if(event.key==='Escape'){this.classList.remove('open');}">${selectOptions}</select>
+        </div>
+        <button class="icon-btn" id="play-btn-${turn.index}" title="Play / Stop" onclick="togglePlayTurn(${turn.index})">▶</button>
+        <button class="icon-btn btn-delete" title="Delete turn (D)" onclick="deleteTurn(${turn.index})">🗑</button>`;
+
+    const chipsHtml = turn.deleted
+      ? `<span class="deleted-chip">DELETED</span>`
+      : `<span class="sentiment-chip ${sentClass}">${turn.sentiment}</span>
+         ${turn.overridden ? `<span style="font-size:10px;color:var(--muted)">overridden${turn.override_notes ? ': ' + turn.override_notes : ''}</span>` : ''}`;
+
+    const turnFilterSpeaker = turn.deleted ? turn.original_speaker : turn.effective_speaker;
+    return `
+    <div class="${rowClasses}"
+         id="turn-${turn.index}"
+         data-filter-speaker="${turnFilterSpeaker}"
+         style="${borderStyle}"
+         tabindex="0"
+         onkeydown="handleTurnKey(event, ${turn.index})"
+         onfocus="setActiveSpeaker('${turn.original_speaker}')">
+      <span class="turn-ts">[${fmtTime(turn.start)} → ${fmtTime(turn.end)}]</span>
+      <span class="speaker-dot" style="background:${effColor}"></span>
+      <div class="turn-body">
+        <div class="turn-speaker">${speakerLabel}</div>
+        <div class="turn-transcript">${turn.transcript || '<em style="color:var(--muted)">(no transcript)</em>'}</div>
+        <div class="turn-chips">${chipsHtml}</div>
+      </div>
+      <div class="turn-actions">
+        ${actionButtons}
+        <audio id="audio-${turn.index}"></audio>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.reassign-select.open').forEach(el => el.classList.remove('open'));
+    document.querySelectorAll('.modal-overlay.open').forEach(el => el.classList.remove('open'));
+  }
+});
+
+function handleTurnKey(e, idx) {
+  if (e.key === 'r' || e.key === 'R') {
+    e.preventDefault();
+    toggleReassign(idx);
+  }
+  if (e.key === 'd' || e.key === 'D') {
+    e.preventDefault();
+    deleteTurn(idx);
+  }
+}
+
+// ── Speaker actions ────────────────────────────────────────────────────────────
+function scrollToSpeaker(ephId) {
+  // Find first turn for this speaker and scroll to it
+  if (!reviewData) return;
+  const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId);
+  if (!sp || sp.turns.length === 0) return;
+  const firstTurn = sp.turns.reduce((a, b) => a.index < b.index ? a : b);
+  const el = document.getElementById(`turn-${firstTurn.index}`);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setActiveSpeaker(ephId);
+}
+
+function setActiveSpeaker(ephId) {
+  document.querySelectorAll('.speaker-card.active').forEach(el => el.classList.remove('active'));
+  const card = document.getElementById(`card-${ephId}`);
+  if (card) card.classList.add('active');
+}
+
+function toggleFilter(ephId) {
+  if (activeFilter === ephId) {
+    clearFilter();
+  } else {
+    applyFilter(ephId);
+  }
+}
+
+function applyFilter(ephId) {
+  activeFilter = ephId;
+  // Show/hide turn rows
+  document.querySelectorAll('.turn-row').forEach(row => {
+    row.classList.toggle('filtered-out', row.dataset.filterSpeaker !== ephId);
+  });
+  // Update card styles and button labels
+  document.querySelectorAll('.speaker-card').forEach(card => {
+    card.classList.toggle('filter-active', card.id === `card-${ephId}`);
+  });
+  document.querySelectorAll('[id^="filter-btn-"]').forEach(btn => {
+    const id = btn.id.replace('filter-btn-', '');
+    btn.classList.toggle('active', id === ephId);
+    btn.textContent = id === ephId ? '⊙ Filtering' : '⊙ Filter';
+  });
+  // Show filter bar
+  const sp = reviewData?.speakers.find(s => s.ephemeral_id === ephId);
+  const name = sp?.display_name || ephId;
+  document.getElementById('filter-label').textContent = `Showing: ${name}`;
+  document.getElementById('filter-bar').classList.add('visible');
+}
+
+function clearFilter() {
+  activeFilter = null;
+  document.querySelectorAll('.turn-row').forEach(row => row.classList.remove('filtered-out'));
+  document.querySelectorAll('.speaker-card').forEach(card => card.classList.remove('filter-active'));
+  document.querySelectorAll('[id^="filter-btn-"]').forEach(btn => {
+    btn.classList.remove('active');
+    btn.textContent = '⊙ Filter';
+  });
+  document.getElementById('filter-bar').classList.remove('visible');
+}
+
+function toggleMerge(ephId) {
+  const form = document.getElementById(`merge-form-${ephId}`);
+  form.classList.toggle('open');
+}
+
+async function submitMerge(ephId) {
+  const target = document.getElementById(`merge-target-${ephId}`).value;
+  if (!target) return;
+  try {
+    const fd = new FormData();
+    fd.append('target_speaker', target);
+    const res = await api('POST', `/review/${currentSession}/speakers/${ephId}/merge`, fd);
+    toast(`Merged ${res.merged_turns} turns: ${ephId} → ${target}`);
+    await loadReview(currentSession);
+  } catch (e) {
+    toast('Merge failed: ' + e.message, 'error');
+  }
+}
+
+// ── Confirm modal ──────────────────────────────────────────────────────────────
+function openConfirm(ephId) {
+  _confirmEphId = ephId;
+  const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId);
+  document.getElementById('confirm-name').value = sp?.display_name || sp?.suggested_name || '';
+  document.getElementById('confirm-affiliation').value = sp?.affiliation || sp?.suggested_org || '';
+  document.getElementById('confirm-role').value = sp?.role || sp?.suggested_title || '';
+  document.getElementById('confirm-notes').value = '';
+  openModal('confirm-modal');
+}
+
+async function submitConfirm() {
+  const name = document.getElementById('confirm-name').value.trim();
+  const affiliation = document.getElementById('confirm-affiliation').value.trim();
+  const role = document.getElementById('confirm-role').value.trim();
+  const notes = document.getElementById('confirm-notes').value.trim();
+  const ephId = _confirmEphId;
+  const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId);
+
+  closeModal('confirm-modal');
+  try {
+    let catalogueId = sp?.catalogue_id;
+    if (!catalogueId) {
+      const fd = new FormData();
+      if (name) fd.append('name', name);
+      if (affiliation) fd.append('affiliation', affiliation);
+      if (role) fd.append('role', role);
+      if (notes) fd.append('notes', notes);
+      const res = await api('POST', '/speakers', fd);
+      catalogueId = res.catalogue_id;
+    } else {
+      const fd = new FormData();
+      if (name) fd.append('name', name);
+      if (affiliation) fd.append('affiliation', affiliation);
+      if (role) fd.append('role', role);
+      if (notes) fd.append('notes', notes);
+      await api('PUT', `/speakers/${catalogueId}`, fd);
+    }
+    const lfd = new FormData();
+    lfd.append('session_id', currentSession);
+    lfd.append('ephemeral_id', ephId);
+    lfd.append('catalogue_id', catalogueId);
+    await api('POST', '/link', lfd);
+    toast(`Speaker confirmed: ${name || ephId}`);
+    await loadReview(currentSession);
+  } catch (e) {
+    toast('Error confirming speaker: ' + e.message, 'error');
+  }
+}
+
+// ── Search modal ───────────────────────────────────────────────────────────────
+function openSearch(ephId) {
+  _searchEphId = ephId;
+  _selectedCatalogueId = null;
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-results').innerHTML = '';
+  openModal('search-modal');
+}
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) { document.getElementById('search-results').innerHTML = ''; return; }
+  try {
+    const results = await api('GET', `/speakers?search=${encodeURIComponent(q)}`);
+    document.getElementById('search-results').innerHTML = results.slice(0, 10).map(r =>
+      `<div class="search-result-item" onclick="selectAndLink('${r.catalogue_id}')">
+        <strong>${r.display_name || r.catalogue_id}</strong>
+        ${r.affiliation ? `<span style="color:var(--muted);font-size:11px"> · ${r.affiliation}</span>` : ''}
+        <span style="font-size:10px;color:var(--accent);margin-left:6px">${r.catalogue_id}</span>
+      </div>`
+    ).join('');
+  } catch (e) {
+    toast('Search error: ' + e.message, 'error');
+  }
+}
+
+async function selectAndLink(catalogueId) {
+  closeModal('search-modal');
+  try {
+    const fd = new FormData();
+    fd.append('session_id', currentSession);
+    fd.append('ephemeral_id', _searchEphId);
+    fd.append('catalogue_id', catalogueId);
+    await api('POST', '/link', fd);
+    toast(`Linked ${_searchEphId} → ${catalogueId}`);
+    await loadReview(currentSession);
+  } catch (e) {
+    toast('Link error: ' + e.message, 'error');
+  }
+}
+
+// ── Turn reassign ──────────────────────────────────────────────────────────────
+function toggleReassign(idx) {
+  const sel = document.getElementById(`reassign-${idx}`);
+  const isOpen = sel.classList.contains('open');
+  document.querySelectorAll('.reassign-select.open').forEach(el => el.classList.remove('open'));
+  if (!isOpen) {
+    sel.classList.add('open');
+    sel.focus();
+  }
+}
+
+async function submitReassign(idx, assignedSpeaker) {
+  const sel = document.getElementById(`reassign-${idx}`);
+  sel.classList.remove('open');
+  try {
+    const fd = new FormData();
+    fd.append('assigned_speaker', assignedSpeaker);
+    await api('POST', `/review/${currentSession}/turns/${idx}/assign`, fd);
+    toast(`Turn ${idx} reassigned to ${assignedSpeaker}`);
+    // Refresh only the affected turn row
+    await refreshTurnRow(idx);
+    // Update stats header
+    const totalOverrides = reviewData.speakers.reduce((a, s) =>
+      a + s.turns.filter(t => t.overridden).length, 0) + 1;
+    const header = document.getElementById('transcript-header');
+    header.textContent = header.textContent.replace(/\d+ override/, `${totalOverrides} override`);
+  } catch (e) {
+    toast('Reassign failed: ' + e.message, 'error');
+  }
+}
+
+async function refreshTurnRow(idx) {
+  // Re-fetch only this turn's data via the review endpoint
+  try {
+    const data = await api('GET', `/review/${currentSession}`);
+    reviewData = data;
+    // Find the turn in the updated data
+    const sp = data.speakers.flatMap(s => s.turns).find(t => t.index === idx);
+    if (!sp) return;
+    const speakerLookup = {};
+    data.speakers.forEach(s => { speakerLookup[s.ephemeral_id] = s; });
+
+    const effColor = getSpeakerColor(sp.effective_speaker);
+    const effSp = speakerLookup[sp.effective_speaker];
+    const effName = effSp?.display_name || sp.effective_speaker;
+    const sentClass = sp.sentiment === 'positive' ? 'sent-positive'
+      : sp.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
+
+    const speakerLabel = sp.overridden
+      ? `<span class="orig">${sp.original_speaker}</span><strong style="color:${effColor}">${effName}</strong>`
+      : `<span style="color:${effColor}">${effName}</span>`;
+
+    const row = document.getElementById(`turn-${idx}`);
+    if (!row) return;
+    row.querySelector('.turn-speaker').innerHTML = speakerLabel;
+    row.querySelector('.speaker-dot').style.background = effColor;
+    row.classList.toggle('overridden', sp.overridden);
+    row.style.borderLeftColor = sp.overridden ? effColor : '';
+
+    const chipsEl = row.querySelector('.turn-chips');
+    chipsEl.innerHTML = `<span class="sentiment-chip ${sentClass}">${sp.sentiment}</span>
+      ${sp.overridden ? `<span style="font-size:10px;color:var(--muted)">overridden${sp.override_notes ? ': ' + sp.override_notes : ''}</span>` : ''}`;
+  } catch (e) {
+    // fallback: full reload
+    await loadReview(currentSession);
+  }
+}
+
+// ── Turn delete / restore ──────────────────────────────────────────────────────
+async function deleteTurn(idx) {
+  try {
+    await api('DELETE', `/review/${currentSession}/turns/${idx}`);
+    toast(`Turn ${idx} deleted`);
+    await loadReview(currentSession);
+  } catch (e) {
+    toast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+async function restoreTurn(idx) {
+  try {
+    await api('POST', `/review/${currentSession}/turns/${idx}/restore`);
+    toast(`Turn ${idx} restored`);
+    await loadReview(currentSession);
+  } catch (e) {
+    toast('Restore failed: ' + e.message, 'error');
+  }
+}
+
+// ── Audio playback ─────────────────────────────────────────────────────────────
+function _stopCurrentAudio() {
+  if (currentlyPlayingIdx === null) return;
+  const prev = document.getElementById(`audio-${currentlyPlayingIdx}`);
+  if (prev) { prev.pause(); prev.currentTime = 0; }
+  const btn = document.getElementById(`play-btn-${currentlyPlayingIdx}`);
+  if (btn) btn.textContent = '▶';
+  currentlyPlayingIdx = null;
+}
+
+async function togglePlayTurn(idx) {
+  if (currentlyPlayingIdx === idx) {
+    _stopCurrentAudio();
+    return;
+  }
+  _stopCurrentAudio();
+  const audioEl = document.getElementById(`audio-${idx}`);
+  const btn = document.getElementById(`play-btn-${idx}`);
+  try {
+    const url = `/review/${currentSession}/audio/${idx}`;
+    if (!audioEl.src || !audioEl.src.endsWith(`/audio/${idx}`)) {
+      audioEl.src = url;
+      audioEl.load();
+    }
+    audioEl.currentTime = 0;
+    audioEl.onended = () => {
+      if (btn) btn.textContent = '▶';
+      currentlyPlayingIdx = null;
+    };
+    await audioEl.play();
+    currentlyPlayingIdx = idx;
+    if (btn) btn.textContent = '⏹';
+  } catch (e) {
+    toast('Audio not available for this source', 'error');
+  }
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+loadSessions();
+</script>
+</body>
+</html>

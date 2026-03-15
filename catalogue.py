@@ -123,6 +123,18 @@ class SpeakerCatalogue:
 
             CREATE INDEX IF NOT EXISTS idx_app_cat ON appearances(catalogue_id);
             CREATE INDEX IF NOT EXISTS idx_app_ses ON appearances(session_id);
+
+            CREATE TABLE IF NOT EXISTS turn_overrides (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id       TEXT    NOT NULL REFERENCES sessions(session_id),
+                turn_index       INTEGER NOT NULL,
+                original_speaker TEXT    NOT NULL,
+                assigned_speaker TEXT    NOT NULL,
+                override_at      TEXT    NOT NULL,
+                notes            TEXT,
+                UNIQUE(session_id, turn_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ovr_ses ON turn_overrides(session_id);
             """)
 
     def _conn(self) -> sqlite3.Connection:
@@ -302,6 +314,57 @@ class SpeakerCatalogue:
                 ORDER BY a.appeared_at DESC
             """, (catalogue_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    def save_turn_override(
+        self,
+        session_id: str,
+        turn_index: int,
+        original_speaker: str,
+        assigned_speaker: str,
+        notes: str = "",
+    ) -> None:
+        """
+        Persist a human correction for a single turn.
+        Uses INSERT OR REPLACE so repeated edits just update the row.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as cx:
+            cx.execute("""
+                INSERT OR REPLACE INTO turn_overrides
+                    (session_id, turn_index, original_speaker, assigned_speaker,
+                     override_at, notes)
+                VALUES (?,?,?,?,?,?)
+            """, (session_id, turn_index, original_speaker, assigned_speaker, now, notes))
+
+    def delete_turn_override(self, session_id: str, turn_index: int) -> None:
+        """Remove a turn override, restoring the turn to its original speaker."""
+        with self._conn() as cx:
+            cx.execute(
+                "DELETE FROM turn_overrides WHERE session_id=? AND turn_index=?",
+                (session_id, turn_index),
+            )
+
+    def get_turn_overrides(self, session_id: str) -> dict[int, dict]:
+        """
+        Return all overrides for a session keyed by turn_index.
+        Each value is: {original_speaker, assigned_speaker, override_at, notes}
+        """
+        with self._conn() as cx:
+            rows = cx.execute("""
+                SELECT turn_index, original_speaker, assigned_speaker,
+                       override_at, notes
+                FROM turn_overrides
+                WHERE session_id = ?
+            """, (session_id,)).fetchall()
+        return {
+            r["turn_index"]: {
+                "original_speaker": r["original_speaker"],
+                "assigned_speaker": r["assigned_speaker"],
+                "override_at":      r["override_at"],
+                "notes":            r["notes"] or "",
+            }
+            for r in rows
+        }
 
     # ── Helpers ────────────────────────────────────────────────────────────
 

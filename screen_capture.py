@@ -272,24 +272,53 @@ class ScreenCapture:
         """
         seen: set[str] = set()
         captures: dict[str, FrameResult] = {}
+        first_turns: dict[str, tuple] = {}  # speaker_id → (turn_start, turn_end)
 
+        # Collect first turn per speaker
         for turn in result.turns:
             sid = turn.speaker_id
-            if sid in seen:
-                continue
-            seen.add(sid)
+            if sid not in seen:
+                seen.add(sid)
+                first_turns[sid] = (turn.start, turn.end)
 
-            turn_duration = turn.end - turn.start
-            # Aim _FRAME_OFFSET_SECS in; clamp to 80% of the turn length
-            ts = turn.start + min(_FRAME_OFFSET_SECS, turn_duration * 0.8)
+        # Detect local audio (not YouTube, not a video file extension)
+        _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+        _VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
+        is_local_audio = (
+            not _is_youtube(video_source)
+            and Path(video_source).suffix.lower() in _AUDIO_EXTS
+        )
 
-            log.info(
-                f"Screen capture: {sid} at {ts:.1f}s "
-                f"(turn {turn.start:.1f}–{turn.end:.1f}s)"
-            )
-            captures[sid] = self.capture_speaker(
-                video_source, sid, ts, session_id
-            )
+        for sid, (turn_start, turn_end) in first_turns.items():
+            if is_local_audio:
+                waveform_path = self._generate_waveform_image(
+                    audio_path=Path(video_source),
+                    speaker_id=sid,
+                    turn_start=turn_start,
+                    turn_end=turn_end,
+                    session_id=session_id,
+                )
+                captures[sid] = FrameResult(
+                    speaker_id=sid,
+                    timestamp=turn_start,
+                    frame_path=waveform_path,
+                    raw_text=None,
+                    suggested_name=None,
+                    suggested_title=None,
+                    suggested_org=None,
+                    confidence=None,
+                    vision_used=False,
+                )
+            else:
+                turn_duration = turn_end - turn_start
+                ts = turn_start + min(_FRAME_OFFSET_SECS, turn_duration * 0.8)
+                log.info(
+                    f"Screen capture: {sid} at {ts:.1f}s "
+                    f"(turn {turn_start:.1f}–{turn_end:.1f}s)"
+                )
+                captures[sid] = self.capture_speaker(
+                    video_source, sid, ts, session_id
+                )
 
         return captures
 
@@ -629,6 +658,52 @@ Rules:
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _generate_waveform_image(
+        self,
+        audio_path: Path,
+        speaker_id: str,
+        turn_start: float,
+        turn_end: float,
+        session_id: str,
+    ) -> Optional[Path]:
+        """
+        Extract the speaker's first-turn audio segment and save a waveform
+        PNG to the same frames/ directory used for video captures.
+        Returns the path on success, None on any error.
+        """
+        try:
+            import librosa
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+
+            frame_dir = self._frame_dir(session_id)
+            out_path = frame_dir / f"{speaker_id}_waveform.png"
+
+            y, _ = librosa.load(
+                str(audio_path),
+                sr=16000,
+                offset=turn_start,
+                duration=turn_end - turn_start,
+            )
+
+            fig, ax = plt.subplots(figsize=(4, 1.5))
+            fig.patch.set_facecolor("#1a1a2e")
+            ax.set_facecolor("#1a1a2e")
+            ax.plot(np.linspace(0, turn_end - turn_start, len(y)), y, color="#00d4aa", linewidth=0.6)
+            ax.axis("off")
+            fig.tight_layout(pad=0)
+            fig.savefig(str(out_path), dpi=80, bbox_inches="tight", facecolor="#1a1a2e")
+            plt.close(fig)
+
+            log.info(f"  Waveform saved: {out_path.name}")
+            return out_path
+
+        except Exception as exc:
+            log.warning(f"  Waveform generation failed for {speaker_id}: {exc}")
+            return None
 
     def _frame_dir(self, session_id: str) -> Path:
         d = self.output_dir / session_id / "frames"

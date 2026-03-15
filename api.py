@@ -12,9 +12,12 @@ The React frontend expects this at http://localhost:8000
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -23,7 +26,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 # ── Env / path setup ─────────────────────────────────────────────────────────
@@ -55,6 +60,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/output-files", StaticFiles(directory="output", check_dir=False), name="output-files")
 
 
 # ── In-memory job store ────────────────────────────────────────────────────────
@@ -788,6 +795,340 @@ def link_speaker(
         ephemeral_id=ephemeral_id,
     )
     return {"status": "linked", "ephemeral_id": ephemeral_id, "catalogue_id": catalogue_id}
+
+
+# ── Review UI page ─────────────────────────────────────────────────────────────
+
+@app.get("/review", response_class=HTMLResponse, summary="Open the speaker review UI")
+def review_page():
+    return Path("review_ui.html").read_text()
+
+
+# ── Review endpoints ───────────────────────────────────────────────────────────
+
+@app.get("/review/{session_id}", summary="Get full review payload for a session")
+def get_review(session_id: str):
+    import sqlite3
+    from catalogue import SpeakerCatalogue
+
+    cat = SpeakerCatalogue()
+
+    # Load session row
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT * FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = {
+        "session_id": row["session_id"],
+        "source_name": row["source_name"],
+        "source_file": row["source_file"],
+        "processed_at": row["processed_at"],
+        "total_duration": row["total_duration"],
+        "num_speakers": row["num_speakers"],
+    }
+
+    result_json = row["result_json"]
+    if not result_json:
+        raise HTTPException(status_code=404, detail="Session has no result data")
+    result = json.loads(result_json)
+    turns_raw = result.get("turns", [])
+
+    # Load appearance links
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        links = cx.execute("""
+            SELECT a.ephemeral_id, a.catalogue_id, s.display_name, s.affiliation, s.role
+            FROM appearances a
+            LEFT JOIN speakers s ON a.catalogue_id = s.catalogue_id
+            WHERE a.session_id = ?
+        """, (session_id,)).fetchall()
+    link_map: dict[str, dict] = {}
+    for lnk in links:
+        link_map[lnk["ephemeral_id"]] = {
+            "catalogue_id": lnk["catalogue_id"],
+            "display_name": lnk["display_name"],
+            "affiliation": lnk["affiliation"],
+            "role": lnk["role"],
+        }
+
+    # Load turn overrides
+    overrides = cat.get_turn_overrides(session_id)
+
+    # Load captures.json if exists
+    captures_path = Path("output") / session_id / "captures.json"
+    captures: dict = {}
+    if captures_path.exists():
+        try:
+            captures = json.loads(captures_path.read_text()).get("speakers", {})
+        except Exception:
+            captures = {}
+
+    # Build speaker objects grouped by effective speaker
+    all_ephemeral_ids: list[str] = sorted({t["speaker_id"] for t in turns_raw})
+
+    # Compute per-speaker turn lists with effective speaker applied
+    speaker_turns: dict[str, list] = {sid: [] for sid in all_ephemeral_ids}
+    for i, t in enumerate(turns_raw):
+        orig = t["speaker_id"]
+        if i in overrides:
+            effective = overrides[i]["assigned_speaker"]
+        else:
+            effective = orig
+        is_deleted = (effective == "__DELETED__")
+        turn_obj = {
+            "index": i,
+            "start": t.get("start", 0),
+            "end": t.get("end", 0),
+            "duration": t.get("duration", 0),
+            "transcript": t.get("transcript", ""),
+            "sentiment": t.get("sentiment", "neutral"),
+            "sentiment_score": t.get("sentiment_score", 0),
+            "original_speaker": orig,
+            "effective_speaker": effective,
+            "overridden": i in overrides,
+            "deleted": is_deleted,
+            "override_notes": overrides[i]["notes"] if i in overrides else "",
+        }
+        if is_deleted:
+            # Keep deleted turns in the original speaker's bucket (for display),
+            # but flag them so stats can exclude them.
+            speaker_turns[orig].append(turn_obj)
+        else:
+            if effective not in speaker_turns:
+                speaker_turns[effective] = []
+            speaker_turns[effective].append(turn_obj)
+
+    total_duration = row["total_duration"] or 1.0
+
+    speakers_out = []
+    for eph_id in all_ephemeral_ids:
+        lnk = link_map.get(eph_id, {})
+        cap = captures.get(eph_id, {})
+
+        # Find frame URL
+        frame_url = None
+        frames_dir = Path("output") / session_id / "frames"
+        if frames_dir.exists():
+            matches = list(frames_dir.glob(f"{eph_id}_*.png"))
+            if matches:
+                frame_file = sorted(matches)[0]
+                frame_url = f"/output-files/{session_id}/frames/{frame_file.name}"
+
+        turns_for_speaker = speaker_turns.get(eph_id, [])
+        active_turns = [t for t in turns_for_speaker if not t.get("deleted")]
+        speaking_time = sum(t["duration"] for t in active_turns)
+
+        speakers_out.append({
+            "ephemeral_id": eph_id,
+            "catalogue_id": lnk.get("catalogue_id"),
+            "display_name": lnk.get("display_name"),
+            "affiliation": lnk.get("affiliation"),
+            "role": lnk.get("role"),
+            "suggested_name": cap.get("suggested_name"),
+            "suggested_title": cap.get("suggested_title"),
+            "suggested_org": cap.get("suggested_org"),
+            "confidence": cap.get("confidence"),
+            "frame_url": frame_url,
+            "total_speaking_time": round(speaking_time, 3),
+            "turn_count": len(active_turns),
+            "turns": turns_for_speaker,
+        })
+
+    # Sort by total speaking time descending
+    speakers_out.sort(key=lambda s: s["total_speaking_time"], reverse=True)
+
+    return {
+        "session": session_data,
+        "speakers": speakers_out,
+        "all_ephemeral_ids": all_ephemeral_ids,
+    }
+
+
+@app.post("/review/{session_id}/turns/{turn_index}/assign", summary="Reassign a single turn to a different speaker")
+def assign_turn(
+    session_id: str,
+    turn_index: int,
+    assigned_speaker: str = Form(...),
+    notes: str = Form(""),
+):
+    import sqlite3, json
+    from catalogue import SpeakerCatalogue
+
+    cat = SpeakerCatalogue()
+
+    # Verify session exists and get original speaker
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    result = json.loads(row["result_json"])
+    turns = result.get("turns", [])
+    if turn_index < 0 or turn_index >= len(turns):
+        raise HTTPException(status_code=400, detail=f"turn_index {turn_index} out of range")
+
+    original_speaker = turns[turn_index]["speaker_id"]
+    cat.save_turn_override(
+        session_id=session_id,
+        turn_index=turn_index,
+        original_speaker=original_speaker,
+        assigned_speaker=assigned_speaker,
+        notes=notes,
+    )
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "turn_index": turn_index,
+        "assigned_speaker": assigned_speaker,
+    }
+
+
+@app.delete("/review/{session_id}/turns/{turn_index}", summary="Mark a turn as deleted")
+def delete_turn(session_id: str, turn_index: int):
+    import sqlite3, json
+    from catalogue import SpeakerCatalogue
+
+    cat = SpeakerCatalogue()
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    turns = json.loads(row["result_json"]).get("turns", [])
+    if turn_index < 0 or turn_index >= len(turns):
+        raise HTTPException(status_code=400, detail=f"turn_index {turn_index} out of range")
+
+    original_speaker = turns[turn_index]["speaker_id"]
+    cat.save_turn_override(
+        session_id=session_id,
+        turn_index=turn_index,
+        original_speaker=original_speaker,
+        assigned_speaker="__DELETED__",
+        notes="deleted by reviewer",
+    )
+    return {"status": "deleted", "session_id": session_id, "turn_index": turn_index}
+
+
+@app.post("/review/{session_id}/turns/{turn_index}/restore", summary="Restore a deleted or overridden turn to its original speaker")
+def restore_turn(session_id: str, turn_index: int):
+    import sqlite3
+    from catalogue import SpeakerCatalogue
+
+    cat = SpeakerCatalogue()
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT session_id FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    cat.delete_turn_override(session_id=session_id, turn_index=turn_index)
+    return {"status": "restored", "session_id": session_id, "turn_index": turn_index}
+
+
+@app.post("/review/{session_id}/speakers/{ephemeral_id}/merge", summary="Bulk-reassign all turns from one speaker to another")
+def merge_speaker(
+    session_id: str,
+    ephemeral_id: str,
+    target_speaker: str = Form(...),
+    notes: str = Form(""),
+):
+    import sqlite3, json
+    from catalogue import SpeakerCatalogue
+
+    cat = SpeakerCatalogue()
+
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    result = json.loads(row["result_json"])
+    turns = result.get("turns", [])
+
+    merged = 0
+    for i, turn in enumerate(turns):
+        if turn["speaker_id"] == ephemeral_id:
+            cat.save_turn_override(
+                session_id=session_id,
+                turn_index=i,
+                original_speaker=ephemeral_id,
+                assigned_speaker=target_speaker,
+                notes=notes,
+            )
+            merged += 1
+
+    return {
+        "status": "ok",
+        "merged_turns": merged,
+        "from": ephemeral_id,
+        "into": target_speaker,
+    }
+
+
+@app.get("/review/{session_id}/audio/{turn_index}", summary="Stream audio clip for a single turn")
+def get_turn_audio(session_id: str, turn_index: int):
+    import sqlite3, json, subprocess, tempfile
+    from catalogue import SpeakerCatalogue
+
+    cat = SpeakerCatalogue()
+
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json, source_file FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    source_file = row["source_file"] or ""
+    # Check if it's a local file
+    from screen_capture import _is_youtube
+    if _is_youtube(source_file) or not Path(source_file).exists():
+        raise HTTPException(status_code=404, detail="audio not available for this source")
+
+    result = json.loads(row["result_json"])
+    turns = result.get("turns", [])
+    if turn_index < 0 or turn_index >= len(turns):
+        raise HTTPException(status_code=400, detail=f"turn_index {turn_index} out of range")
+
+    turn = turns[turn_index]
+    start = turn.get("start", 0)
+    end = turn.get("end", 0)
+    duration = end - start
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir="/tmp")
+    tmp.close()
+    wav_path = tmp.name
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start),
+        "-t", str(duration),
+        "-i", source_file,
+        "-ac", "1",
+        "-ar", "16000",
+        wav_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail="ffmpeg failed to extract audio segment")
+
+    return FileResponse(wav_path, media_type="audio/wav")
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
