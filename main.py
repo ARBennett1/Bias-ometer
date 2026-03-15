@@ -166,6 +166,7 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
     from youtube import YouTubeSource, source_name_from_meta
     from diarizer import NewsDiarizer
     from catalogue import SpeakerCatalogue
+    from screen_capture import ScreenCapture, print_capture_summary
 
     # ── Step 1: fetch audio from YouTube ──────────────────────────────────
     yt = YouTubeSource(
@@ -243,6 +244,20 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
         "--ephemeral SPEAKER_00 --catalogue SPK-0001\n"
     )
 
+    # ── Step 6: screen capture + Vision  (NEW) ───────────────────────────
+    if not args.download_only and not args.no_capture:
+        sc = ScreenCapture(
+            output_dir=out_dir,
+            use_vision=not args.no_vision,
+            cookies_from_browser=args.cookies_from_browser,
+            cookies_file=args.cookies_file,
+        )
+        captures = sc.capture_new_speakers(
+            video_source=args.url,
+            result=result,
+            session_id=session_id,
+        )
+        print_capture_summary(captures)
 
 def cmd_sessions(args: argparse.Namespace) -> None:
     from catalogue import SpeakerCatalogue
@@ -389,7 +404,16 @@ def build_parser() -> argparse.ArgumentParser:
             "--cookies cookies.txt --skip-download <url>"
         ),
     )
-
+    yt.add_argument(
+        "--no-capture",
+        action="store_true",
+        help="Skip screenshot and Vision speaker identification",
+    )
+    yt.add_argument(
+        "--no-vision",
+        action="store_true",
+        help="Take screenshots but skip the Claude Vision API call",
+    )
     # sessions ───────────────────────────────────────────────────────────────
     sub.add_parser("sessions", help="List recorded sessions")
 
