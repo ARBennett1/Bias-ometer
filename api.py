@@ -94,6 +94,7 @@ class Job:
     broadcast_channel: str = ""
     broadcast_date: str = ""
     save_video: bool = False
+    video_path: Optional[str] = None  # set after successful video download
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -527,14 +528,28 @@ def _run_diarization(
             source_name=job.source_name or wav_path.stem,
         )
 
-        # After:
+        # For YouTube jobs, source_file must be a usable video reference (URL or
+        # local path) so the review screen-capture can extract frames later.
         if job.source_type == "youtube":
-            result.source_file = job.source_name or job.job_id  # e.g. "YouTube · BBC News"
+            if job.video_path and Path(job.video_path).exists():
+                result.source_file = job.video_path
+            else:
+                result.source_file = job.source_ref  # original YouTube URL
 
         _update_job(job_id, progress_pct=saving_band[0], progress_stage="saving",
                     progress_detail="Writing to catalogue…", progress="Saving…")
         cat = SpeakerCatalogue()
         session_id = cat.record_session(result)
+
+        # Write diarization JSON to output/ (mirrors what the CLI does)
+        out_dir = Path("output")
+        out_dir.mkdir(exist_ok=True)
+        json_path = out_dir / f"{session_id}_diarization.json"
+        try:
+            json_path.write_text(json.dumps(result.to_dict(), indent=2))
+            log.info(f"Diarization JSON written: {json_path}")
+        except Exception as je:
+            log.warning(f"Could not write diarization JSON: {je}")
 
         job = _jobs[job_id]
         if job.broadcast_channel or job.broadcast_date:
@@ -596,6 +611,8 @@ def _youtube_worker(job_id: str, url: str) -> None:
                     with yt_dlp.YoutubeDL(vdl_opts) as ydl:
                         ydl.download([url])
                     log.info(f"Video saved: {video_path}")
+                if video_path.exists():
+                    _update_job(job_id, video_path=str(video_path))
             except Exception as ve:
                 log.warning(f"Video save failed (non-fatal): {ve}")
 
