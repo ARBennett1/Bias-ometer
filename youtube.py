@@ -123,6 +123,63 @@ class YouTubeSource:
         self.cookies_file = Path(cookies_file) if cookies_file else None
         self._check_yt_dlp()
 
+    def download_video(self, url: str, out_path: Path) -> Path:
+        """
+        Download the best quality video+audio stream as MP4 to *out_path*.
+        Re-uses the existing file if it already exists (cached).
+
+        Parameters
+        ----------
+        url: str
+            YouTube video URL.
+        out_path: Path
+            Destination path (should end in .mp4).
+
+        Returns
+        -------
+        Path
+            Path to the downloaded MP4 file.
+        """
+        import subprocess
+        import shutil
+
+        if out_path.exists():
+            log.info(f"  Cached video found: {out_path.name} — skipping download")
+            return out_path
+
+        if not shutil.which("yt-dlp"):
+            raise RuntimeError("yt-dlp binary not found on PATH.\nRun: pip install yt-dlp")
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            "yt-dlp",
+            "--extractor-args", "youtube:player_client=android_vr",
+            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "--output", str(out_path),
+        ]
+
+        if self.cookies_from_browser:
+            cmd += ["--cookies-from-browser", self.cookies_from_browser]
+        elif self.cookies_file:
+            cmd += ["--cookies", str(self.cookies_file)]
+
+        cmd.append(url)
+        log.debug(f"yt-dlp video command: {' '.join(cmd)}")
+
+        try:
+            subprocess.run(cmd, check=True, text=True, capture_output=False)
+        except subprocess.CalledProcessError as exc:
+            out_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"yt-dlp exited with code {exc.returncode}.\n"
+                "Run the command above manually to see the full error output."
+            ) from exc
+
+        log.info(f"  Video saved: {out_path}")
+        return out_path
+
     def fetch(
         self,
         url: str,
@@ -213,7 +270,8 @@ class YouTubeSource:
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": False,
-            "format": "bestaudio/best"
+            # android_vr client bypasses the JS n-challenge without needing a JS runtime
+            "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
         }
 
         with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
@@ -258,6 +316,8 @@ class YouTubeSource:
 
         cmd = [
             "yt-dlp",
+            # android_vr client bypasses the JS n-challenge without needing a JS runtime
+            "--extractor-args", "youtube:player_client=android_vr",
             # Format: prefer direct HTTPS stream (format 18), fall back to best audio
             "--format", "bestaudio/best",
             # Output template — yt-dlp will append the codec extension
@@ -321,6 +381,12 @@ def source_name_from_meta(meta: VideoMetadata) -> str:
     if meta.channel:
         return f"YouTube · {meta.channel}"
     return f"YouTube · {meta.video_id}"
+
+
+def metadata_to_dict(meta: VideoMetadata) -> dict:
+    """Return VideoMetadata as a plain dict suitable for JSON serialisation."""
+    import dataclasses
+    return dataclasses.asdict(meta)
 
 
 def _raise_friendly(exc: Exception) -> None:

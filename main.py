@@ -163,7 +163,7 @@ def cmd_process(args: argparse.Namespace) -> None:
 
 
 def cmd_process_youtube(args: argparse.Namespace) -> None:
-    from youtube import YouTubeSource, source_name_from_meta
+    from youtube import YouTubeSource, source_name_from_meta, metadata_to_dict
     from diarizer import NewsDiarizer
     from catalogue import SpeakerCatalogue
     from screen_capture import ScreenCapture, print_capture_summary, save_captures
@@ -178,8 +178,28 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
     log.info(f"YouTube URL: {args.url}")
     meta, wav_path = yt.fetch(args.url)
 
+    # ── Step 1b: optionally download full video ────────────────────────────
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    video_path: Path | None = None
+    if args.save_video:
+        video_path = out_dir / f"{wav_path.stem}.mp4"
+        log.info("Downloading full video …")
+        video_path = yt.download_video(args.url, video_path)
+
+    # ── Step 1c: save metadata JSON ───────────────────────────────────────
+    meta_file = out_dir / f"{wav_path.stem}_metadata.json"
+    meta_file.write_text(
+        json.dumps(metadata_to_dict(meta), indent=2, ensure_ascii=False)
+    )
+    log.info(f"Metadata   → {meta_file}")
+
     if args.download_only:
-        print(f"\nDownloaded: {wav_path}")
+        print(f"\nAudio      : {wav_path}")
+        if video_path:
+            print(f"Video      : {video_path}")
+        print(f"Metadata   : {meta_file}")
         print(f"Title      : {meta.title}")
         print(f"Channel    : {meta.channel}")
         print(f"Duration   : {meta.duration_seconds:.0f}s")
@@ -213,8 +233,12 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
     print(f"  Source  : {result.source_name}")
     print(f"  Title   : {meta.title}")
     print(f"  Channel : {meta.channel}")
+    print(f"  URL     : {meta.url}")
+    print(f"  Uploaded: {meta.upload_date}")
     print(f"  Length  : {result.total_duration:.1f}s")
     print(f"  Speakers: {result.num_speakers}")
+    if video_path:
+        print(f"  Video   : {video_path}")
     print("─" * w)
     print(f"  {'Speaker':<14} {'Time':>8}  {'%Audio':>7}  {'Turns':>5}  Sentiment")
     print("─" * w)
@@ -228,11 +252,9 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
     print("═" * w + "\n")
 
     # ── Step 4: save JSON ─────────────────────────────────────────────────
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"{wav_path.stem}_diarization.json"
     out_file.write_text(result.to_json())
-    log.info(f"Results → {out_file}")
+    log.info(f"Results    → {out_file}")
 
     # ── Step 5: record session ────────────────────────────────────────────
     cat = SpeakerCatalogue()
@@ -244,8 +266,10 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
         "--ephemeral SPEAKER_00 --catalogue SPK-0001\n"
     )
 
-    # ── Step 6: screen capture + Vision  (NEW) ───────────────────────────
-    if not args.download_only and not args.no_capture:
+    # ── Step 6: screen capture + Vision ───────────────────────────────────
+    if not args.no_capture:
+        # Use local video file if already downloaded, otherwise stream from URL
+        video_source = str(video_path) if video_path else args.url
         sc = ScreenCapture(
             output_dir=out_dir,
             use_vision=not args.no_vision,
@@ -253,7 +277,7 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
             cookies_file=args.cookies_file,
         )
         captures = sc.capture_new_speakers(
-            video_source=args.url,
+            video_source=video_source,
             result=result,
             session_id=session_id,
         )
@@ -383,7 +407,9 @@ def build_parser() -> argparse.ArgumentParser:
     yt.add_argument("--no-transcription", action="store_true")
     yt.add_argument("--no-sentiment", action="store_true")
     yt.add_argument("--download-only", action="store_true",
-                    help="Download audio without running the diarization pipeline")
+                    help="Download audio (and video if --save-video) without running the diarization pipeline")
+    yt.add_argument("--save-video", action="store_true",
+                    help="Download and save the full MP4 video to the output directory for local reprocessing")
     yt.add_argument(
         "--cookies-from-browser",
         default=None,
