@@ -166,7 +166,7 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
     from youtube import YouTubeSource, source_name_from_meta
     from diarizer import NewsDiarizer
     from catalogue import SpeakerCatalogue
-    from screen_capture import ScreenCapture, print_capture_summary
+    from screen_capture import ScreenCapture, print_capture_summary, save_captures
 
     # ── Step 1: fetch audio from YouTube ──────────────────────────────────
     yt = YouTubeSource(
@@ -258,7 +258,8 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
             session_id=session_id,
         )
         print_capture_summary(captures)
-
+        save_captures(captures, session_id, out_dir, source_url=args.url)
+        
 def cmd_sessions(args: argparse.Namespace) -> None:
     from catalogue import SpeakerCatalogue
     rows = SpeakerCatalogue().list_sessions()

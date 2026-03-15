@@ -213,6 +213,7 @@ class YouTubeSource:
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": False,
+            "format": "bestaudio/best"
         }
 
         with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
@@ -258,7 +259,7 @@ class YouTubeSource:
         cmd = [
             "yt-dlp",
             # Format: prefer direct HTTPS stream (format 18), fall back to best audio
-            "--format", "18/bestaudio",
+            "--format", "bestaudio/best",
             # Output template — yt-dlp will append the codec extension
             "--output", str(tmp_base) + ".%(ext)s",
             # Extract audio and convert to WAV at 16 kHz mono

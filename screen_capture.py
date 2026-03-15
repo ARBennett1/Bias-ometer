@@ -48,7 +48,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 log = logging.getLogger(__name__)
 
@@ -330,7 +330,7 @@ class ScreenCapture:
                 "yt-dlp is required for YouTube sources. Run: pip install yt-dlp"
             )
 
-        opts: dict = {
+        opts: dict[str, object] = {
             "format": "best[ext=mp4]/best",
             "quiet": True,
             "no_warnings": True,
@@ -341,13 +341,21 @@ class ScreenCapture:
         elif self.cookies_file and self.cookies_file.exists():
             opts["cookiefile"] = str(self.cookies_file)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
+        with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
+            info = cast(dict[str, Any], ydl.extract_info(youtube_url, download=False))
 
-        # Prefer the top-level URL; fall back to the first format entry
-        url = info.get("url") or ""
-        if not url and info.get("formats"):
-            url = info["formats"][-1].get("url", "")
+        # Prefer the top-level URL; fall back to the last format entry.
+        url = info.get("url")
+        if not isinstance(url, str):
+            url = ""
+
+        formats = info.get("formats")
+        if not url and isinstance(formats, list) and formats:
+            last_fmt = formats[-1]
+            if isinstance(last_fmt, dict):
+                candidate = last_fmt.get("url")
+                if isinstance(candidate, str):
+                    url = candidate
 
         if not url:
             raise RuntimeError(
@@ -563,7 +571,17 @@ Rules:
                 ],
             )
 
-            raw_response = response.content[0].text.strip()
+            text_parts: list[str] = []
+            for block in response.content:
+                if getattr(block, "type", None) != "text":
+                    continue
+                block_text = getattr(block, "text", None)
+                if isinstance(block_text, str) and block_text.strip():
+                    text_parts.append(block_text.strip())
+
+            raw_response = "\n".join(text_parts).strip()
+            if not raw_response:
+                raise ValueError("Claude response contained no text blocks")
             data = _parse_vision_json(raw_response)
 
             name  = data.get("suggested_name")  or None
@@ -688,6 +706,43 @@ def print_capture_summary(captures: dict[str, FrameResult]) -> None:
         )
     print()
 
+def save_captures(
+    captures: dict[str, FrameResult],
+    session_id: str,
+    output_dir: Path,
+    source_url: str = "",
+) -> Path:
+    """
+    Persist Vision results to  <output_dir>/<session_id>/captures.json
+    so they can be linked back to frames and the diarization transcript.
+    """
+    out = {
+        "session_id":  session_id,
+        "source_url":  source_url,
+        "captured_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "speakers": {
+            sid: {
+                "speaker_id":      cap.speaker_id,
+                "timestamp":       cap.timestamp,
+                "frame_path":      str(cap.frame_path) if cap.frame_path else None,
+                "suggested_name":  cap.suggested_name,
+                "suggested_title": cap.suggested_title,
+                "suggested_org":   cap.suggested_org,
+                "confidence":      cap.confidence,
+                "raw_text":        cap.raw_text,
+                "vision_used":     cap.vision_used,
+                "identified":      cap.identified,
+                "error":           cap.error,
+            }
+            for sid, cap in captures.items()
+        },
+    }
+
+    captures_file = output_dir / session_id / "captures.json"
+    captures_file.parent.mkdir(parents=True, exist_ok=True)
+    captures_file.write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    log.info(f"Captures saved → {captures_file}")
+    return captures_file
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Stand-alone CLI  (for testing without full diarization pipeline)
