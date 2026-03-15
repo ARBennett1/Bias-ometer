@@ -892,6 +892,7 @@ def get_review(session_id: str):
             "overridden": i in overrides,
             "deleted": is_deleted,
             "override_notes": overrides[i]["notes"] if i in overrides else "",
+            "frame_url": f"/review/{session_id}/turns/{i}/frame",
         }
         if is_deleted:
             # Keep deleted turns in the original speaker's bucket (for display),
@@ -1129,6 +1130,68 @@ def get_turn_audio(session_id: str, turn_index: int):
         raise HTTPException(status_code=500, detail="ffmpeg failed to extract audio segment")
 
     return FileResponse(wav_path, media_type="audio/wav")
+
+
+@app.get("/review/{session_id}/turns/{turn_index}/frame", summary="Get or on-demand capture a frame for a specific turn")
+def get_turn_frame(session_id: str, turn_index: int):
+    import sqlite3
+    from catalogue import SpeakerCatalogue
+    from screen_capture import ScreenCapture, _is_youtube
+
+    cat = SpeakerCatalogue()
+
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json, source_file FROM sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    result = json.loads(row["result_json"])
+    turns = result.get("turns", [])
+
+    if turn_index < 0 or turn_index >= len(turns):
+        raise HTTPException(status_code=400, detail=f"turn_index {turn_index} out of range")
+
+    turn = turns[turn_index]
+    speaker_id = turn.get("speaker_id", "SPEAKER_00")
+    start = turn.get("start", 0.0)
+    end = turn.get("end", 0.0)
+    duration = end - start
+    ts = start + min(1.5, duration * 0.8)
+
+    frames_dir = Path("output") / session_id / "frames"
+    frame_path = frames_dir / f"turn_{turn_index}_{speaker_id}_{ts:.2f}.png"
+
+    if not frame_path.exists():
+        source_file = row["source_file"] or ""
+        if not source_file:
+            raise HTTPException(status_code=404, detail="No video source available")
+
+        _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+        if not _is_youtube(source_file) and Path(source_file).suffix.lower() in _AUDIO_EXTS:
+            raise HTTPException(status_code=404, detail="Audio-only source: no video frames available")
+
+        if not _is_youtube(source_file) and not Path(source_file).exists():
+            raise HTTPException(status_code=404, detail="Source file not found on disk")
+
+        try:
+            sc = ScreenCapture(output_dir="output", use_vision=False, multi_frame=False)
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            playback_url = sc._resolve_source(source_file)
+            ok = sc._extract_frame(playback_url, ts, frame_path)
+        except Exception as exc:
+            log.warning(f"Frame capture failed for turn {turn_index}: {exc}")
+            raise HTTPException(status_code=500, detail=f"Frame capture failed: {exc}")
+
+        if not ok or not frame_path.exists():
+            raise HTTPException(status_code=500, detail="ffmpeg produced no output")
+
+    return FileResponse(str(frame_path), media_type="image/png",
+                        headers={"Cache-Control": "max-age=3600"})
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────

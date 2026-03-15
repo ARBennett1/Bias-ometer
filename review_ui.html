@@ -174,6 +174,34 @@
   </div>
 </div>
 
+<!-- Frame Viewer Modal -->
+<div class="modal-overlay" id="frame-modal" onclick="if(event.target===this)closeModal('frame-modal')">
+  <div class="modal" style="max-width:960px;width:90vw;padding:0;overflow:hidden;background:var(--surface)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)">
+      <span id="frame-modal-title" style="font-size:12px;color:var(--muted);font-family:monospace"></span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="frame-modal-hint" style="font-size:11px;color:var(--muted)"></span>
+        <button class="btn" onclick="closeModal('frame-modal')" style="padding:3px 10px;font-size:12px">✕</button>
+      </div>
+    </div>
+    <div id="frame-modal-body" style="position:relative;min-height:180px;background:#111;display:flex;align-items:center;justify-content:center">
+      <img id="frame-modal-img" src="" alt="Turn frame"
+           style="max-width:100%;max-height:72vh;display:none;object-fit:contain">
+      <div id="frame-modal-spinner" style="color:#888;font-size:13px;padding:40px">Loading frame…</div>
+      <div id="frame-modal-error" style="display:none;color:#f87171;font-size:13px;padding:40px;text-align:center">
+        No video frame available for this turn.<br>
+        <span style="font-size:11px;color:#666">(Audio-only sources or missing video file)</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--surface)">
+      <button class="btn" id="frame-prev-btn" onclick="stepTurnFrame(-1)" title="Previous turn">← Prev</button>
+      <button class="btn" id="frame-next-btn" onclick="stepTurnFrame(+1)" title="Next turn">Next →</button>
+      <div style="flex:1"></div>
+      <button class="btn btn-primary" id="frame-reassign-btn" onclick="closeModal('frame-modal');toggleReassign(_frameTurnIdx)" style="display:none">↺ Reassign this turn</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
 let currentSession = null;
@@ -404,6 +432,7 @@ function renderTranscript(speakers, allIds, session) {
             onkeydown="if(event.key==='Escape'){this.classList.remove('open');}">${selectOptions}</select>
         </div>
         <button class="icon-btn" id="play-btn-${turn.index}" title="Play / Stop" onclick="togglePlayTurn(${turn.index})">▶</button>
+        <button class="icon-btn btn-frame" title="View frame (F)" onclick="viewTurnFrame(${turn.index})">📷</button>
         <button class="icon-btn btn-delete" title="Delete turn (D)" onclick="deleteTurn(${turn.index})">🗑</button>`;
 
     const chipsHtml = turn.deleted
@@ -437,21 +466,26 @@ function renderTranscript(speakers, allIds, session) {
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
+  const frameModalOpen = document.getElementById('frame-modal').classList.contains('open');
+
   if (e.key === 'Escape') {
     document.querySelectorAll('.reassign-select.open').forEach(el => el.classList.remove('open'));
     document.querySelectorAll('.modal-overlay.open').forEach(el => el.classList.remove('open'));
+    return;
+  }
+
+  if (frameModalOpen) {
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); stepTurnFrame(-1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); stepTurnFrame(+1); }
+    if (e.key === 'f' || e.key === 'F') { e.preventDefault(); closeModal('frame-modal'); }
+    return;
   }
 });
 
 function handleTurnKey(e, idx) {
-  if (e.key === 'r' || e.key === 'R') {
-    e.preventDefault();
-    toggleReassign(idx);
-  }
-  if (e.key === 'd' || e.key === 'D') {
-    e.preventDefault();
-    deleteTurn(idx);
-  }
+  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleReassign(idx); }
+  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); deleteTurn(idx); }
+  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); viewTurnFrame(idx); }
 }
 
 // ── Speaker actions ────────────────────────────────────────────────────────────
@@ -689,6 +723,53 @@ async function refreshTurnRow(idx) {
     // fallback: full reload
     await loadReview(currentSession);
   }
+}
+
+// ── Turn frame viewer ──────────────────────────────────────────────────────────
+let _frameTurnIdx = null;
+
+function viewTurnFrame(idx) {
+  _frameTurnIdx = idx;
+  const modal = document.getElementById('frame-modal');
+  const img   = document.getElementById('frame-modal-img');
+  const spin  = document.getElementById('frame-modal-spinner');
+  const err   = document.getElementById('frame-modal-error');
+  const title = document.getElementById('frame-modal-title');
+  const hint  = document.getElementById('frame-modal-hint');
+  const rbtn  = document.getElementById('frame-reassign-btn');
+
+  const allTurns = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index);
+  const turn = allTurns.find(t => t.index === idx);
+
+  img.style.display  = 'none';
+  img.src            = '';
+  spin.style.display = 'block';
+  err.style.display  = 'none';
+  rbtn.style.display = (turn && !turn.deleted) ? 'inline-flex' : 'none';
+
+  if (turn) {
+    title.textContent = `Turn ${idx}  ·  ${fmtTime(turn.start)} → ${fmtTime(turn.end)}  ·  ${turn.original_speaker}`;
+    hint.textContent  = 'F to close  ·  ← → to step turns';
+  }
+
+  modal.classList.add('open');
+
+  const url = `/review/${currentSession}/turns/${idx}/frame?_=${Date.now()}`;
+  img.onload = () => { spin.style.display = 'none'; img.style.display = 'block'; };
+  img.onerror = () => { spin.style.display = 'none'; err.style.display = 'block'; };
+  img.src = url;
+
+  const pos = allTurns.findIndex(t => t.index === idx);
+  document.getElementById('frame-prev-btn').disabled = pos <= 0;
+  document.getElementById('frame-next-btn').disabled = pos >= allTurns.length - 1;
+}
+
+function stepTurnFrame(delta) {
+  if (_frameTurnIdx === null) return;
+  const allTurns = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index);
+  const pos = allTurns.findIndex(t => t.index === _frameTurnIdx);
+  const next = allTurns[pos + delta];
+  if (next) viewTurnFrame(next.index);
 }
 
 // ── Turn delete / restore ──────────────────────────────────────────────────────
