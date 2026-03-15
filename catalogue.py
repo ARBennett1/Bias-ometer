@@ -100,13 +100,15 @@ class SpeakerCatalogue:
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
-                session_id      TEXT PRIMARY KEY,
-                source_name     TEXT,
-                source_file     TEXT,
-                processed_at    TEXT NOT NULL,
-                total_duration  REAL,
-                num_speakers    INTEGER,
-                result_json     TEXT    -- full DiarizationResult blob
+                session_id        TEXT PRIMARY KEY,
+                source_name       TEXT,
+                source_file       TEXT,
+                processed_at      TEXT NOT NULL,
+                total_duration    REAL,
+                num_speakers      INTEGER,
+                result_json       TEXT,    -- full DiarizationResult blob
+                broadcast_date    TEXT,
+                broadcast_channel TEXT
             );
 
             CREATE TABLE IF NOT EXISTS appearances (
@@ -175,10 +177,20 @@ class SpeakerCatalogue:
         with self._conn() as cx:
             rows = cx.execute("""
                 SELECT session_id, source_name, processed_at,
-                       total_duration, num_speakers
+                       total_duration, num_speakers,
+                       broadcast_date, broadcast_channel
                 FROM sessions ORDER BY processed_at DESC
             """).fetchall()
         return [dict(r) for r in rows]
+
+    def update_session_meta(self, session_id: str, source_name: str | None,
+                            broadcast_date: str | None, broadcast_channel: str | None):
+        with self._conn() as cx:
+            cx.execute("""
+                UPDATE sessions
+                SET source_name = ?, broadcast_date = ?, broadcast_channel = ?
+                WHERE session_id = ?
+            """, (source_name, broadcast_date, broadcast_channel, session_id))
 
     # ── Speaker management ─────────────────────────────────────────────────
 

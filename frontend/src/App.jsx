@@ -393,6 +393,9 @@ function NewJobView({ onJobSubmitted }) {
   const [maxSpeakers, setMaxSpeakers] = useState('')
   const [transcription, setTranscription] = useState(true)
   const [sentiment, setSentiment] = useState(true)
+  const [saveVideo, setSaveVideo] = useState(false)
+  const [broadcastChannel, setBroadcastChannel] = useState('')
+  const [broadcastDate, setBroadcastDate] = useState('')
   const [cookiesBrowser, setCookiesBrowser] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -417,6 +420,9 @@ function NewJobView({ onJobSubmitted }) {
       if (maxSpeakers) fd.append('max_speakers', maxSpeakers)
       fd.append('enable_transcription', transcription)
       fd.append('enable_sentiment', sentiment)
+      if (broadcastChannel) fd.append('broadcast_channel', broadcastChannel)
+      if (broadcastDate) fd.append('broadcast_date', broadcastDate)
+      fd.append('save_video', saveVideo)
 
       const res = await apiFetch('/jobs', { method: 'POST', body: fd })
       onJobSubmitted(res.job_id)
@@ -497,8 +503,16 @@ function NewJobView({ onJobSubmitted }) {
 
           <div className="card">
             <div className="form-group">
-              <label className="form-label">Source label <span style={{ color: 'var(--dimmer)', textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
-              <input className="form-input" placeholder="e.g. BBC News At Ten" value={sourceName} onChange={e => setSourceName(e.target.value)} />
+              <label className="form-label">Programme name <span style={{ color: 'var(--dimmer)', textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+              <input className="form-input" placeholder="e.g. Politics Live" value={sourceName} onChange={e => setSourceName(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Broadcast channel <span style={{ color: 'var(--dimmer)', textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+              <input className="form-input" placeholder="e.g. BBC Two" value={broadcastChannel} onChange={e => setBroadcastChannel(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Date of broadcast <span style={{ color: 'var(--dimmer)', textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
+              <input className="form-input" type="date" value={broadcastDate} onChange={e => setBroadcastDate(e.target.value)} />
             </div>
           </div>
         </div>
@@ -539,6 +553,14 @@ function NewJobView({ onJobSubmitted }) {
                 <div className="toggle-desc">DistilBERT SST-2 — requires transcription</div>
               </div>
               <Toggle value={sentiment} onChange={setSentiment} />
+            </div>
+            <hr className="divider" style={{ margin: '10px 0' }} />
+            <div className="toggle-row">
+              <div>
+                <div className="toggle-label">Save video</div>
+                <div className="toggle-desc">Download and keep the original video file</div>
+              </div>
+              <Toggle value={saveVideo} onChange={setSaveVideo} />
             </div>
           </div>
 
@@ -770,12 +792,45 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
   const [linkErr, setLinkErr] = useState('')
   const [linkOk, setLinkOk] = useState('')
   const [filterSpk, setFilterSpk] = useState(null)
+  const [editingMeta, setEditingMeta] = useState(false)
+  const [metaForm, setMetaForm] = useState({ source_name: '', broadcast_date: '', broadcast_channel: '' })
+  const [metaSaving, setMetaSaving] = useState(false)
+  const [metaErr, setMetaErr] = useState('')
 
   useEffect(() => {
     apiFetch(`/sessions/${sessionId}`)
       .then(d => { setSession(d); setLoading(false) })
       .catch(() => setLoading(false))
   }, [sessionId])
+
+  function openMetaEdit() {
+    setMetaForm({
+      source_name: session.source_name || '',
+      broadcast_date: session.broadcast_date || '',
+      broadcast_channel: session.broadcast_channel || '',
+    })
+    setMetaErr('')
+    setEditingMeta(true)
+  }
+
+  async function saveMeta() {
+    setMetaSaving(true)
+    setMetaErr('')
+    try {
+      await apiFetch(`/sessions/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(metaForm),
+      })
+      const updated = await apiFetch(`/sessions/${sessionId}`)
+      setSession(updated)
+      setEditingMeta(false)
+    } catch (e) {
+      setMetaErr(e.message)
+    } finally {
+      setMetaSaving(false)
+    }
+  }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Loader2 size={20} className="spin" /></div>
   if (!session) return <div className="notice notice-error"><AlertCircle size={16} /> Session not found.</div>
@@ -816,11 +871,47 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
         <button className="btn btn-ghost btn-sm" onClick={onBack}><ArrowLeft size={14} /> Back</button>
-        <div>
-          <div className="section-title" style={{ marginBottom: 0 }}>{result.source_name || session.source_name}</div>
+        <div style={{ flex: 1 }}>
+          <div className="section-title" style={{ marginBottom: 0 }}>{session.source_name || result.source_name}</div>
           <div style={{ fontSize: 12, color: 'var(--dim)', fontFamily: 'var(--mono)' }}>{sessionId}</div>
+          {(session.broadcast_date || session.broadcast_channel) && (
+            <div style={{ fontSize: 12, color: 'var(--dim)', marginTop: 2 }}>
+              {[session.broadcast_channel, session.broadcast_date].filter(Boolean).join(' · ')}
+            </div>
+          )}
         </div>
+        <button className="btn btn-ghost btn-sm" onClick={openMetaEdit}><Edit3 size={14} /> Edit info</button>
       </div>
+
+      {editingMeta && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="section-title" style={{ fontSize: 13, marginBottom: 12 }}>Edit session info</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+            <label style={{ fontSize: 12 }}>
+              <div style={{ marginBottom: 4, color: 'var(--dim)' }}>Programme name</div>
+              <input className="input" value={metaForm.source_name}
+                onChange={e => setMetaForm(f => ({ ...f, source_name: e.target.value }))} />
+            </label>
+            <label style={{ fontSize: 12 }}>
+              <div style={{ marginBottom: 4, color: 'var(--dim)' }}>Date of broadcast</div>
+              <input className="input" type="date" value={metaForm.broadcast_date}
+                onChange={e => setMetaForm(f => ({ ...f, broadcast_date: e.target.value }))} />
+            </label>
+            <label style={{ fontSize: 12 }}>
+              <div style={{ marginBottom: 4, color: 'var(--dim)' }}>Broadcast channel</div>
+              <input className="input" value={metaForm.broadcast_channel}
+                onChange={e => setMetaForm(f => ({ ...f, broadcast_channel: e.target.value }))} />
+            </label>
+          </div>
+          {metaErr && <div className="notice notice-error" style={{ marginBottom: 8 }}><AlertCircle size={14} />{metaErr}</div>}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-primary btn-sm" onClick={saveMeta} disabled={metaSaving}>
+              {metaSaving ? <Loader2 size={13} className="spin" /> : <CheckCircle2 size={13} />} Save
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setEditingMeta(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {linkOk && <div className="notice notice-ok"><CheckCircle2 size={16} />{linkOk}</div>}
 
@@ -960,10 +1051,39 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
 function SessionsView({ onViewSession }) {
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
+  const [editModal, setEditModal] = useState(null) // session object being edited
+  const [editForm, setEditForm] = useState({ source_name: '', broadcast_date: '', broadcast_channel: '' })
+  const [saving, setSaving] = useState(false)
+  const [editErr, setEditErr] = useState('')
 
-  useEffect(() => {
+  const refresh = () =>
     apiFetch('/sessions').then(d => { setSessions(d); setLoading(false) }).catch(() => setLoading(false))
-  }, [])
+
+  useEffect(() => { refresh() }, [])
+
+  function openEdit(e, s) {
+    e.stopPropagation()
+    setEditForm({ source_name: s.source_name || '', broadcast_date: s.broadcast_date || '', broadcast_channel: s.broadcast_channel || '' })
+    setEditErr('')
+    setEditModal(s)
+  }
+
+  async function saveEdit() {
+    setSaving(true); setEditErr('')
+    try {
+      await apiFetch(`/sessions/${editModal.session_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editForm),
+      })
+      setEditModal(null)
+      refresh()
+    } catch (e) {
+      setEditErr(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Loader2 size={20} className="spin" /></div>
 
@@ -981,21 +1101,57 @@ function SessionsView({ onViewSession }) {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Session ID</th><th>Source</th><th>Date</th><th>Duration</th><th>Speakers</th><th></th></tr>
+                <tr><th>Programme</th><th>Channel</th><th>Broadcast date</th><th>Duration</th><th>Speakers</th><th></th></tr>
               </thead>
               <tbody>
                 {sessions.map(s => (
                   <tr key={s.session_id} style={{ cursor: 'pointer' }} onClick={() => onViewSession(s.session_id)}>
-                    <td><span className="mono">{s.session_id}</span></td>
-                    <td>{s.source_name || '—'}</td>
-                    <td><span className="mono" style={{ fontSize: 11 }}>{fmtDate(s.processed_at)}</span></td>
+                    <td>{s.source_name || <span style={{ color: 'var(--dim)' }}>—</span>}</td>
+                    <td>{s.broadcast_channel || <span style={{ color: 'var(--dim)' }}>—</span>}</td>
+                    <td>{s.broadcast_date || <span style={{ color: 'var(--dim)' }}>—</span>}</td>
                     <td>{fmtTime(s.total_duration)}</td>
                     <td>{s.num_speakers}</td>
-                    <td><button className="btn btn-ghost btn-sm"><Eye size={13} /> View</button></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-ghost btn-sm" style={{ marginRight: 4 }}
+                        onClick={e => openEdit(e, s)}><Edit3 size={13} /> Edit</button>
+                      <button className="btn btn-ghost btn-sm"
+                        onClick={e => { e.stopPropagation(); onViewSession(s.session_id) }}><Eye size={13} /> View</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {editModal && (
+        <div className="modal-overlay" onClick={() => setEditModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+            <div className="modal-title">Edit session info</div>
+            <div style={{ fontSize: 11, color: 'var(--dim)', fontFamily: 'var(--mono)', marginBottom: 16 }}>{editModal.session_id}</div>
+            <div className="form-group">
+              <label className="form-label">Programme name</label>
+              <input className="input" value={editForm.source_name}
+                onChange={e => setEditForm(f => ({ ...f, source_name: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Broadcast channel</label>
+              <input className="input" value={editForm.broadcast_channel}
+                onChange={e => setEditForm(f => ({ ...f, broadcast_channel: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Date of broadcast</label>
+              <input className="input" type="date" value={editForm.broadcast_date}
+                onChange={e => setEditForm(f => ({ ...f, broadcast_date: e.target.value }))} />
+            </div>
+            {editErr && <div className="notice notice-error"><AlertCircle size={14} />{editErr}</div>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button className="btn btn-primary btn-sm" onClick={saveEdit} disabled={saving}>
+                {saving ? <Loader2 size={13} className="spin" /> : <CheckCircle2 size={13} />} Save
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditModal(null)}>Cancel</button>
+            </div>
           </div>
         </div>
       )}
@@ -1195,7 +1351,7 @@ function Dashboard({ onNavigate }) {
     Promise.all([
       apiFetch('/health'),
       apiFetch('/sessions'),
-      apiFetch('/speakers?top=5'),
+      apiFetch('/speakers'),
       apiFetch('/jobs'),
     ]).then(([h, sessions, spk, jobs]) => {
       setHealth(h)

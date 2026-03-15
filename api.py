@@ -91,6 +91,9 @@ class Job:
     max_speakers: Optional[int] = None
     enable_transcription: bool = True
     enable_sentiment: bool = True
+    broadcast_channel: str = ""
+    broadcast_date: str = ""
+    save_video: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -533,6 +536,15 @@ def _run_diarization(
         cat = SpeakerCatalogue()
         session_id = cat.record_session(result)
 
+        job = _jobs[job_id]
+        if job.broadcast_channel or job.broadcast_date:
+            cat.update_session_meta(
+                session_id,
+                source_name=job.source_name or None,
+                broadcast_date=job.broadcast_date or None,
+                broadcast_channel=job.broadcast_channel or None,
+            )
+
         _update_job(
             job_id,
             status="complete",
@@ -565,6 +577,28 @@ def _youtube_worker(job_id: str, url: str) -> None:
             channel = meta.channel or meta.video_id
             _update_job(job_id, source_name=f"YouTube · {channel}")
 
+        if job.save_video:
+            try:
+                from youtube import _safe_stem
+                video_dir = Path("videos")
+                video_dir.mkdir(exist_ok=True)
+                stem = _safe_stem(meta.video_id)
+                video_path = video_dir / f"{stem}.mp4"
+                if not video_path.exists():
+                    _update_job(job_id, progress_detail="Saving video…", progress="Saving video…")
+                    import yt_dlp
+                    vdl_opts: dict = {
+                        "quiet": True, "no_warnings": True,
+                        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                        "outtmpl": str(video_path),
+                        "merge_output_format": "mp4",
+                    }
+                    with yt_dlp.YoutubeDL(vdl_opts) as ydl:
+                        ydl.download([url])
+                    log.info(f"Video saved: {video_path}")
+            except Exception as ve:
+                log.warning(f"Video save failed (non-fatal): {ve}")
+
         _run_diarization(
             job_id, wav_path,
             model_band=(30, 35),
@@ -592,6 +626,9 @@ async def submit_job(
     max_speakers: Optional[int] = Form(None),
     enable_transcription: bool = Form(True),
     enable_sentiment: bool = Form(True),
+    broadcast_channel: str = Form(""),
+    broadcast_date: str = Form(""),
+    save_video: bool = Form(False),
 ):
     _require_hf_token()
 
@@ -609,6 +646,9 @@ async def submit_job(
             max_speakers=max_speakers,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            broadcast_channel=broadcast_channel,
+            broadcast_date=broadcast_date,
+            save_video=save_video,
         )
         with _jobs_lock:
             _jobs[job_id] = job
@@ -634,6 +674,9 @@ async def submit_job(
             max_speakers=max_speakers,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            broadcast_channel=broadcast_channel,
+            broadcast_date=broadcast_date,
+            save_video=save_video,
         )
         with _jobs_lock:
             _jobs[job_id] = job
@@ -696,6 +739,22 @@ def get_session(session_id: str):
         ).fetchall()
     match["links"] = [dict(r) for r in links]
     return match
+
+
+@app.patch("/sessions/{session_id}", summary="Update session metadata")
+def update_session(session_id: str, body: dict):
+    from catalogue import SpeakerCatalogue
+    cat = SpeakerCatalogue()
+    rows = cat.list_sessions()
+    if not any(r["session_id"] == session_id for r in rows):
+        raise HTTPException(status_code=404, detail="Session not found")
+    cat.update_session_meta(
+        session_id,
+        source_name=body.get("source_name"),
+        broadcast_date=body.get("broadcast_date"),
+        broadcast_channel=body.get("broadcast_channel"),
+    )
+    return {"ok": True}
 
 
 # ── Speakers ───────────────────────────────────────────────────────────────────
