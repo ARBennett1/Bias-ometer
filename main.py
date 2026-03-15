@@ -5,7 +5,7 @@ Command-line interface.
 
 Commands
 --------
-  process           Diarise a local audio file and save JSON results
+  process           Diarise a local audio/video file and save JSON results (MP4 supported)
   process-youtube   Download audio from a YouTube URL and diarise it
   sessions          List all recorded sessions
   speakers          Query / list speakers in the catalogue
@@ -15,8 +15,11 @@ Commands
 
 Quick examples
 --------------
-  # Process a local file
+  # Process a local audio file
   python main.py process audio/clip.wav --source "BBC Radio 4"
+
+  # Process a local MP4 (audio extracted automatically; screen capture runs too)
+  python main.py process output/mUV_p2IGLtc.mp4 --source "BBC News"
 
   # Process directly from YouTube
   python main.py process-youtube "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -53,7 +56,9 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -77,6 +82,21 @@ else:
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _extract_audio_from_mp4(mp4_path: Path, wav_path: Path) -> None:
+    """Extract a 16 kHz mono WAV from an MP4 file using ffmpeg."""
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(mp4_path),
+        "-ar", "16000",
+        "-ac", "1",
+        "-vn",
+        str(wav_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio extraction failed:\n{proc.stderr}")
+
 
 def _require_hf_token() -> str:
     token = os.environ.get("HF_TOKEN", "").strip()
@@ -110,6 +130,20 @@ def cmd_process(args: argparse.Namespace) -> None:
     from diarizer import NewsDiarizer
     from catalogue import SpeakerCatalogue
 
+    input_path = Path(args.audio_file)
+    is_mp4 = input_path.suffix.lower() == ".mp4"
+
+    # ── MP4: extract audio to a temporary WAV ─────────────────────────────
+    _tmp_wav = None
+    if is_mp4:
+        _tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        wav_path = Path(_tmp_wav.name)
+        log.info(f"MP4 detected – extracting audio to {wav_path} …")
+        _extract_audio_from_mp4(input_path, wav_path)
+        audio_file = wav_path
+    else:
+        audio_file = input_path
+
     diarizer = NewsDiarizer(
         hf_token=_require_hf_token(),
         enable_transcription=not args.no_transcription,
@@ -120,10 +154,21 @@ def cmd_process(args: argparse.Namespace) -> None:
     )
 
     result = diarizer.process(
-        audio_path=args.audio_file,
-        source_name=args.source or Path(args.audio_file).stem,
+        audio_path=audio_file,
+        source_name=args.source or input_path.stem,
         show_progress=True,
     )
+
+    # Point source_file back at the original MP4, not the temp WAV
+    if is_mp4:
+        result.source_file = str(input_path)
+
+    # Clean up temp WAV
+    if _tmp_wav is not None:
+        try:
+            wav_path.unlink()
+        except OSError:
+            pass
 
     # Print summary ──────────────────────────────────────────────────────────
     w = 64
@@ -147,7 +192,7 @@ def cmd_process(args: argparse.Namespace) -> None:
     # Save JSON ──────────────────────────────────────────────────────────────
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{Path(args.audio_file).stem}_diarization.json"
+    out_file = out_dir / f"{input_path.stem}_diarization.json"
     out_file.write_text(result.to_json())
     log.info(f"Results → {out_file}")
 
@@ -160,6 +205,22 @@ def cmd_process(args: argparse.Namespace) -> None:
         f"  python main.py link --session {session_id} "
         "--ephemeral SPEAKER_00 --catalogue SPK-0001\n"
     )
+
+    # ── Screen capture (MP4 only) ─────────────────────────────────────────
+    if is_mp4 and not args.no_capture:
+        from screen_capture import ScreenCapture, print_capture_summary, save_captures
+
+        sc = ScreenCapture(
+            output_dir=out_dir,
+            use_vision=not args.no_vision,
+        )
+        captures = sc.capture_new_speakers(
+            video_source=str(input_path),
+            result=result,
+            session_id=session_id,
+        )
+        print_capture_summary(captures)
+        save_captures(captures, session_id, out_dir, source_url=str(input_path))
 
 
 def cmd_process_youtube(args: argparse.Namespace) -> None:
@@ -394,6 +455,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--max-speakers", type=int, default=None)
     pr.add_argument("--no-transcription", action="store_true")
     pr.add_argument("--no-sentiment", action="store_true")
+    pr.add_argument("--no-capture", action="store_true",
+                    help="Skip screenshot and Vision speaker identification (MP4 only)")
+    pr.add_argument("--no-vision", action="store_true",
+                    help="Take screenshots but skip the Claude Vision API call (MP4 only)")
 
     # process-youtube ────────────────────────────────────────────────────────
     yt = sub.add_parser("process-youtube", help="Download and diarise a YouTube video")
