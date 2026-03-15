@@ -296,6 +296,19 @@ class SpeakerCatalogue:
 
         now = datetime.now(timezone.utc).isoformat()
         with self._conn() as cx:
+            # Skip if this ephemeral speaker is already linked to this catalogue
+            # entry for this session (prevents double-counting on re-link).
+            existing = cx.execute(
+                "SELECT id FROM appearances WHERE catalogue_id=? AND session_id=? AND ephemeral_id=?",
+                (catalogue_id, session_id, ephemeral_id),
+            ).fetchone()
+            if existing:
+                log.info(
+                    f"Appearance already recorded for {ephemeral_id} → {catalogue_id} "
+                    f"in session {session_id}; skipping duplicate insert."
+                )
+                return
+
             cx.execute("""
                 INSERT INTO appearances
                     (catalogue_id, session_id, ephemeral_id, source_name,
