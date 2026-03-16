@@ -41,6 +41,16 @@ function fmtTime(s) {
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`
 }
 
+function fmtTimestamp(s) {
+  if (s == null) return '00:00'
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = Math.floor(s % 60)
+  const mm = String(m).padStart(2, '0')
+  const ss = String(sec).padStart(2, '0')
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
+}
+
 function fmtDate(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-GB', {
@@ -781,6 +791,70 @@ function JobsView({ onViewSession }) {
   )
 }
 
+// ─── TranscriptView ───────────────────────────────────────────────────────────
+function TranscriptView({ turns, linkedName }) {
+  const [copied, setCopied] = useState(false)
+
+  function speakerLabel(spk) {
+    return linkedName(spk) || spk.replace('SPEAKER_', 'Speaker ')
+  }
+
+  function copyText() {
+    const lines = turns.map(t => {
+      const name = speakerLabel(t.speaker_id)
+      const time = fmtTimestamp(t.start)
+      return `[${time}]  ${name}\n${t.transcript || '(no transcript)'}`
+    })
+    navigator.clipboard.writeText(lines.join('\n\n')).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  if (!turns.length) return (
+    <div className="card" style={{ color: 'var(--dim)', textAlign: 'center', padding: 32 }}>No turns available.</div>
+  )
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button className="btn btn-ghost btn-sm" onClick={copyText}>
+          {copied ? <CheckCircle2 size={13} /> : <List size={13} />}
+          {copied ? 'Copied!' : 'Copy transcript'}
+        </button>
+      </div>
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ maxHeight: 620, overflowY: 'auto', padding: '8px 0' }}>
+          {turns.map((t, i) => {
+            const color = speakerColor(t.speaker_id)
+            const name = speakerLabel(t.speaker_id)
+            return (
+              <div key={i} style={{
+                display: 'grid',
+                gridTemplateColumns: '72px 160px 1fr',
+                gap: '0 16px',
+                padding: '8px 20px',
+                borderBottom: '1px solid var(--bord)',
+                alignItems: 'baseline',
+              }}>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--dimmer)', paddingTop: 1 }}>
+                  {fmtTimestamp(t.start)}
+                </span>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 600, color, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {name}
+                </span>
+                <span style={{ fontSize: 13, color: t.transcript ? 'var(--text)' : 'var(--dimmer)', fontStyle: t.transcript ? 'normal' : 'italic', lineHeight: 1.55 }}>
+                  {t.transcript || 'no transcript'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── SessionDetail ────────────────────────────────────────────────────────────
 function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
   const [session, setSession] = useState(null)
@@ -979,12 +1053,12 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
 
       {/* Content tabs */}
       <div className="tabs">
-        {['timeline','turns'].map(t => (
+        {['timeline','turns','transcript'].map(t => (
           <button key={t} className={`tab ${activeTab === t ? 'active' : ''}`} onClick={() => setActiveTab(t)}>
             {t.charAt(0).toUpperCase() + t.slice(1)}
           </button>
         ))}
-        {filterSpk && (
+        {filterSpk && activeTab !== 'transcript' && (
           <span style={{ alignSelf: 'center', fontSize: 12, color: 'var(--accent)', marginLeft: 8 }}>
             Filtered: {filterSpk} — <button className="link-btn" onClick={() => setFilterSpk(null)}>clear</button>
           </span>
@@ -1021,6 +1095,10 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
             </div>
           ))}
         </div>
+      )}
+
+      {activeTab === 'transcript' && (
+        <TranscriptView turns={turns} linkedName={linkedName} />
       )}
 
       {/* Link modal */}
