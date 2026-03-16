@@ -225,6 +225,9 @@ def cmd_process(args: argparse.Namespace) -> None:
         sc = ScreenCapture(
             output_dir=out_dir,
             use_vision=not args.no_vision,
+            scan_window_secs=args.scan_window,
+            max_scan_frames_remote=getattr(args, 'max_scan_frames', 20),
+            text_prescreen=not args.no_text_prescreen,
         )
         captures = sc.capture_new_speakers(
             video_source=str(input_path),
@@ -358,6 +361,9 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
         sc = ScreenCapture(
             output_dir=out_dir,
             use_vision=not args.no_vision,
+            scan_window_secs=args.scan_window,
+            max_scan_frames_remote=getattr(args, 'max_scan_frames', 20),
+            text_prescreen=not args.no_text_prescreen,
             cookies_from_browser=args.cookies_from_browser,
             cookies_file=args.cookies_file,
         )
@@ -550,6 +556,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Take screenshots but skip the Claude Vision API call (MP4 only)")
     pr.add_argument("--no-ner", action="store_true",
                     help="Skip NER name extraction from transcripts")
+    pr.add_argument("--scan-window", type=float, default=60.0,
+                    help="Seconds of each speaker's first turn to scan for lower-third text (default: 60)")
+    pr.add_argument("--no-text-prescreen", action="store_true",
+                    help="Disable Tesseract/pixel pre-screening; send all extracted frames to Vision")
     pr.add_argument("--merge-gap", type=float, default=1.0,
                     help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
 
@@ -601,6 +611,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     yt.add_argument("--no-ner", action="store_true",
                     help="Skip NER name extraction from transcripts")
+    yt.add_argument("--scan-window", type=float, default=60.0,
+                    help="Seconds of each speaker's first turn to scan for lower-third text (default: 60)")
+    yt.add_argument("--no-text-prescreen", action="store_true",
+                    help="Disable Tesseract/pixel pre-screening; send all extracted frames to Vision")
+    yt.add_argument("--max-scan-frames", type=int, default=20,
+                    help="Maximum frames to extract per speaker for YouTube CDN sources (default: 20)")
     yt.add_argument("--merge-gap", type=float, default=1.0,
                     help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
     # sessions ───────────────────────────────────────────────────────────────

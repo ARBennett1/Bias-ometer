@@ -32,6 +32,11 @@ python-multipart>=0.0.9   # required by FastAPI for Form / UploadFile parsing
 # ── Claude Vision API ─────────────────────────────────────────────────────────
 anthropic>=0.46.0
 
+# ── Frame pre-screening ────────────────────────────────────────────────────────
+pytesseract>=0.3.10    # optional — OCR pre-screening for local video sources
+# pytesseract also requires the Tesseract binary: brew install tesseract
+Pillow>=10.0.0         # required by frame pre-screening (pytesseract and pixel heuristic)
+
 # ── Visualisation (waveform images for audio-only sources) ────────────────────
 matplotlib>=3.8.0
 

@@ -52,13 +52,13 @@ from typing import Any, Optional, cast
 
 log = logging.getLogger(__name__)
 
-# ─── How far into a speaker turn to grab the frame ────────────────────────────
-# Offset from turn start (seconds). A small pause lets cut transitions settle.
-_FRAME_OFFSET_SECS: float = 1.5
-
-# ─── How many frames to sample per speaker (picks the one with most text) ─────
-_CANDIDATE_FRAMES: int = 3
-_CANDIDATE_SPREAD_SECS: float = 4.0   # spread candidates over this window
+# ─── Scan parameters ─────────────────────────────────────────────────────────
+_SCAN_INTERVAL_SECS: float = 2.0       # extract one frame every N seconds
+_SCAN_WINDOW_SECS: float = 60.0        # scan at most this many seconds of a turn
+_MAX_SCAN_FRAMES_REMOTE: int = 20      # cap for YouTube CDN sources
+_PRESCREEN_MIN_CHARS: int = 8          # min Tesseract char count to pass prescreen
+_BOTTOM_STRIP_FRACTION: float = 0.25   # bottom fraction of frame to crop for OCR
+_PIXEL_STD_THRESHOLD: float = 40.0    # pixel std threshold for contrast heuristic
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -92,6 +92,10 @@ class FrameResult:
         Whether Claude Vision was actually called for this frame.
     error : Optional[str]
         Human-readable error message if something went wrong.
+    prescreen_method : Optional[str]
+        Method used to pre-screen frames for text before Vision:
+        'tesseract' | 'pixel_heuristic' | 'none'.
+        None means pre-screening was not attempted (e.g. fallback frame path).
     """
     speaker_id: str
     timestamp: float
@@ -103,6 +107,7 @@ class FrameResult:
     confidence: Optional[str]
     vision_used: bool = False
     error: Optional[str] = None
+    prescreen_method: Optional[str] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -146,10 +151,17 @@ class ScreenCapture:
     anthropic_api_key : Optional[str]
         Anthropic API key.  If None, reads ANTHROPIC_API_KEY from the
         environment (loaded from .env by main.py).
-    multi_frame : bool
-        If True, capture _CANDIDATE_FRAMES frames per speaker and pick the
-        one that Vision identifies most confidently.  Slower but more
-        reliable for content that doesn't always show a lower-third.
+    scan_window_secs : float
+        Seconds of each speaker's first turn to scan for lower-third text.
+        Default: 60.0.
+    max_scan_frames_remote : int
+        Maximum frames to extract per speaker for YouTube CDN sources.
+        Default: 20.
+    text_prescreen : bool
+        If True (default), pre-screen frames for lower-third text using
+        Tesseract OCR (local sources) or a pixel-contrast heuristic
+        (YouTube CDN sources) before committing to a Vision API call.
+        Set False to send all extracted frames to Vision (up to 3).
     cookies_from_browser : Optional[str]
         Browser name for yt-dlp cookie auth (e.g. "safari", "chrome").
         Only needed for YouTube sources.
@@ -162,14 +174,18 @@ class ScreenCapture:
         output_dir: str | Path = "output",
         use_vision: bool = True,
         anthropic_api_key: Optional[str] = None,
-        multi_frame: bool = True,
+        scan_window_secs: float = _SCAN_WINDOW_SECS,
+        max_scan_frames_remote: int = _MAX_SCAN_FRAMES_REMOTE,
+        text_prescreen: bool = True,
         cookies_from_browser: Optional[str] = None,
         cookies_file: Optional[str | Path] = None,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.use_vision = use_vision
-        self.multi_frame = multi_frame
+        self.scan_window_secs = scan_window_secs
+        self.max_scan_frames_remote = max_scan_frames_remote
+        self.text_prescreen = text_prescreen
         self.cookies_from_browser = cookies_from_browser
         self.cookies_file = Path(cookies_file) if cookies_file else None
 
@@ -185,6 +201,17 @@ class ScreenCapture:
 
         # Cache resolved direct video URLs (YouTube CDN links, etc.)
         self._url_cache: dict[str, str] = {}
+
+        # Attempt to import pytesseract for OCR pre-screening
+        self._tesseract_available = False
+        if self.text_prescreen:
+            try:
+                import pytesseract
+                pytesseract.get_tesseract_version()
+                self._tesseract_available = True
+                log.info("Tesseract available — will use OCR pre-screening for local sources")
+            except Exception:
+                log.info("Tesseract not available — will use pixel heuristic for pre-screening")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -218,30 +245,15 @@ class ScreenCapture:
         """
         frame_dir = self._frame_dir(session_id)
         playback_url = self._resolve_source(video_source)
-
-        if self.multi_frame:
-            return self._capture_best_frame(
-                playback_url, speaker_id, timestamp, frame_dir
-            )
-        else:
-            frame_path = frame_dir / f"{speaker_id}_{timestamp:.2f}.png"
-            ok = self._extract_frame(playback_url, timestamp, frame_path)
-            if not ok:
-                return FrameResult(
-                    speaker_id=speaker_id, timestamp=timestamp,
-                    frame_path=None, raw_text=None,
-                    suggested_name=None, suggested_title=None,
-                    suggested_org=None, confidence=None,
-                    error="ffmpeg frame extraction failed",
-                )
-            if self.use_vision:
-                return self._analyse_frame(speaker_id, timestamp, frame_path)
-            return FrameResult(
-                speaker_id=speaker_id, timestamp=timestamp,
-                frame_path=frame_path, raw_text=None,
-                suggested_name=None, suggested_title=None,
-                suggested_org=None, confidence=None,
-            )
+        is_remote = _is_youtube(video_source)
+        return self._scan_turn_for_best_frame(
+            playback_url=playback_url,
+            speaker_id=speaker_id,
+            turn_start=timestamp,
+            turn_end=None,
+            frame_dir=frame_dir,
+            is_remote=is_remote,
+        )
 
     def capture_new_speakers(
         self,
@@ -283,11 +295,13 @@ class ScreenCapture:
 
         # Detect local audio (not YouTube, not a video file extension)
         _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
-        _VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
         is_local_audio = (
             not _is_youtube(video_source)
             and Path(video_source).suffix.lower() in _AUDIO_EXTS
         )
+
+        is_remote = _is_youtube(video_source)
+        playback_url = self._resolve_source(video_source)
 
         for sid, (turn_start, turn_end) in first_turns.items():
             if is_local_audio:
@@ -310,14 +324,17 @@ class ScreenCapture:
                     vision_used=False,
                 )
             else:
-                turn_duration = turn_end - turn_start
-                ts = turn_start + min(_FRAME_OFFSET_SECS, turn_duration * 0.8)
                 log.info(
-                    f"Screen capture: {sid} at {ts:.1f}s "
-                    f"(turn {turn_start:.1f}–{turn_end:.1f}s)"
+                    f"Screen capture: {sid} — scanning "
+                    f"{turn_start:.1f}s–{min(turn_end, turn_start + self.scan_window_secs):.1f}s"
                 )
-                captures[sid] = self.capture_speaker(
-                    video_source, sid, ts, session_id
+                captures[sid] = self._scan_turn_for_best_frame(
+                    playback_url=playback_url,
+                    speaker_id=sid,
+                    turn_start=turn_start,
+                    turn_end=turn_end,
+                    frame_dir=self._frame_dir(session_id),
+                    is_remote=is_remote,
                 )
 
         return captures
@@ -394,84 +411,177 @@ class ScreenCapture:
         return url
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Multi-frame selection
+    # Text-aware frame scanning
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _capture_best_frame(
+    def _scan_turn_for_best_frame(
         self,
         playback_url: str,
         speaker_id: str,
-        base_timestamp: float,
+        turn_start: float,
+        turn_end: Optional[float],
         frame_dir: Path,
+        is_remote: bool,
     ) -> FrameResult:
         """
-        Extract _CANDIDATE_FRAMES evenly spaced around `base_timestamp`,
-        run Vision on each, and return the result with the highest-confidence
-        name identification.  Falls back to the first frame if none identify.
-        """
-        spread = _CANDIDATE_SPREAD_SECS
-        n = _CANDIDATE_FRAMES
-        offsets = [spread * i / (n - 1) for i in range(n)] if n > 1 else [0.0]
+        Two-pass text-aware scan across a speaker turn.
 
-        candidates: list[FrameResult] = []
-        for i, offset in enumerate(offsets):
-            ts = base_timestamp + offset
-            frame_path = frame_dir / f"{speaker_id}_{ts:.2f}_c{i}.png"
-            ok = self._extract_frame(playback_url, ts, frame_path)
+        Pass 1: extract frames at regular intervals across the turn window,
+        pre-screen each for lower-third text.
+        Pass 2: send the top-3 text-rich frames to Claude Vision.
+
+        Returns the FrameResult with the highest-confidence name identification,
+        or the first successfully extracted frame if Vision finds nothing.
+        """
+        # 1. Build candidate timestamp list
+        if turn_end is not None:
+            scan_end = min(turn_end, turn_start + self.scan_window_secs)
+        else:
+            scan_end = turn_start + self.scan_window_secs
+
+        timestamps: list[float] = []
+        ts = turn_start
+        while ts < scan_end:
+            timestamps.append(ts)
+            ts += _SCAN_INTERVAL_SECS
+
+        # 2. Apply remote frame cap
+        if is_remote and len(timestamps) > self.max_scan_frames_remote:
+            log.debug(f"  Remote source: capping scan at {self.max_scan_frames_remote} frames")
+            timestamps = timestamps[:self.max_scan_frames_remote]
+
+        # 3. Log scan plan
+        log.info(f"  Scanning {len(timestamps)} frames for {speaker_id} ({turn_start:.1f}s – scan end)")
+
+        # 4. Extract and pre-screen all frames
+        prescreened: list[tuple[float, Path, int, str]] = []  # (ts, path, char_count, method)
+        first_extracted: Optional[tuple[float, Path]] = None
+
+        for scan_ts in timestamps:
+            temp_path = frame_dir / f"{speaker_id}_scan_{scan_ts:.2f}.png"
+            ok = self._extract_frame(playback_url, scan_ts, temp_path)
             if not ok:
                 continue
 
-            if self.use_vision:
-                result = self._analyse_frame(speaker_id, ts, frame_path)
-            else:
-                result = FrameResult(
-                    speaker_id=speaker_id, timestamp=ts,
-                    frame_path=frame_path, raw_text=None,
-                    suggested_name=None, suggested_title=None,
-                    suggested_org=None, confidence=None,
-                )
-            candidates.append(result)
+            if first_extracted is None:
+                first_extracted = (scan_ts, temp_path)
 
-        if not candidates:
+            passed, char_count, method = self._prescreen_frame(temp_path, is_remote)
+            log.debug(f"    Prescreen {scan_ts:.2f}s: passed={passed} chars={char_count} method={method}")
+
+            if passed:
+                prescreened.append((scan_ts, temp_path, char_count, method))
+
+        # 5. Fallback if no frames passed prescreening
+        if not prescreened and first_extracted is not None:
+            log.info(f"  No text-rich frames found for {speaker_id} — falling back to first extracted frame")
+            fallback_ts, fallback_path = first_extracted
+            prescreened = [(fallback_ts, fallback_path, 0, "none")]
+
+        # 10. Handle total failure (no frames extracted at all)
+        if not prescreened:
             return FrameResult(
-                speaker_id=speaker_id, timestamp=base_timestamp,
+                speaker_id=speaker_id, timestamp=turn_start,
                 frame_path=None, raw_text=None,
                 suggested_name=None, suggested_title=None,
                 suggested_org=None, confidence=None,
-                error="All frame extractions failed",
+                prescreen_method=None,
+                error="All frame extractions failed during scan",
             )
 
-        # Pick the best: high > medium > low > None, breaking ties by most text
+        # 6. Sort by char_count descending, take top 3
+        prescreened.sort(key=lambda x: x[2], reverse=True)
+        candidates_to_try = prescreened[:3]
+
+        # 7. Call Vision on candidates
         _conf_rank = {"high": 3, "medium": 2, "low": 1}
+        vision_results: list[FrameResult] = []
+        for cand_ts, cand_path, cand_chars, cand_method in candidates_to_try:
+            if self.use_vision:
+                result = self._analyse_frame(speaker_id, cand_ts, cand_path)
+            else:
+                result = FrameResult(
+                    speaker_id=speaker_id, timestamp=cand_ts,
+                    frame_path=cand_path, raw_text=None,
+                    suggested_name=None, suggested_title=None,
+                    suggested_org=None, confidence=None,
+                )
+            result.prescreen_method = cand_method
+            vision_results.append(result)
+
+        # 8. Pick the best result
         best = max(
-            candidates,
+            vision_results,
             key=lambda r: (
                 _conf_rank.get(r.confidence or "", 0),
                 len(r.raw_text or ""),
             ),
         )
 
-        # Tidy up — delete the candidate frames we didn't pick
-        for r in candidates:
-            if r is not best and r.frame_path and r.frame_path.exists():
-                try:
-                    # Rename winning candidate to a clean filename
-                    pass
-                except OSError:
-                    pass
-
-        # Rename winning frame to a clean, predictable name
+        # 9. Clean up: rename winning frame, delete others
+        winning_path = frame_dir / f"{speaker_id}_{best.timestamp:.2f}.png"
         if best.frame_path and best.frame_path.exists():
-            clean_name = frame_dir / f"{speaker_id}_{best.timestamp:.2f}.png"
-            best.frame_path.rename(clean_name)
-            best.frame_path = clean_name
+            best.frame_path.rename(winning_path)
+            best.frame_path = winning_path
 
-        # Delete losers
-        for r in candidates:
-            if r is not best and r.frame_path and r.frame_path.exists():
-                r.frame_path.unlink(missing_ok=True)
+        # Delete all scan frames that are not the winner
+        all_scan_paths = {path for _, path, _, _ in prescreened}
+        for scan_path in all_scan_paths:
+            if scan_path != winning_path and scan_path.exists():
+                scan_path.unlink(missing_ok=True)
 
+        # Also clean up any extracted frames that failed prescreening
+        for scan_ts in timestamps:
+            leftover = frame_dir / f"{speaker_id}_scan_{scan_ts:.2f}.png"
+            if leftover != winning_path and leftover.exists():
+                leftover.unlink(missing_ok=True)
+
+        # 11. Log the outcome
+        log.info(
+            f"  Best frame for {speaker_id}: {best.timestamp:.1f}s  "
+            f"confidence={best.confidence}  prescreen={best.prescreen_method}"
+        )
         return best
+
+    def _prescreen_frame(
+        self, frame_path: Path, is_remote: bool
+    ) -> tuple[bool, int, str]:
+        """
+        Pre-screen a frame for the presence of lower-third text.
+        Returns (passed, char_count, method).
+        """
+        if not self.text_prescreen:
+            return (True, 0, "none")
+
+        # Path A — Tesseract OCR (local sources only)
+        if self._tesseract_available and not is_remote:
+            try:
+                import pytesseract
+                from PIL import Image
+                img = Image.open(frame_path)
+                w, h = img.size
+                crop = img.crop((0, int(h * (1 - _BOTTOM_STRIP_FRACTION)), w, h))
+                text = pytesseract.image_to_string(crop, config="--psm 6")
+                text = text.strip()
+                char_count = len(text)
+                return (char_count >= _PRESCREEN_MIN_CHARS, char_count, "tesseract")
+            except Exception as e:
+                log.debug(f"    Tesseract prescreen failed ({e}), falling through to pixel heuristic")
+
+        # Path B — Pixel contrast heuristic
+        try:
+            from PIL import Image
+            import numpy as np
+            img = Image.open(frame_path)
+            w, h = img.size
+            crop = img.crop((0, int(h * (1 - _BOTTOM_STRIP_FRACTION)), w, h))
+            gray = crop.convert("L")
+            arr = np.array(gray)
+            std = float(arr.std())
+            return (std > _PIXEL_STD_THRESHOLD, int(std), "pixel_heuristic")
+        except Exception as e:
+            log.debug(f"    Pixel heuristic prescreen failed ({e}), passing frame through")
+            return (True, 0, "none")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Frame extraction  (ffmpeg)
@@ -808,6 +918,7 @@ def save_captures(
                 "vision_used":     cap.vision_used,
                 "identified":      cap.identified,
                 "error":           cap.error,
+                "prescreen_method": cap.prescreen_method,
             }
             for sid, cap in captures.items()
         },
@@ -863,9 +974,15 @@ def _cli() -> None:
         help="Skip Claude Vision; only save the screenshot",
     )
     parser.add_argument(
-        "--no-multi-frame",
+        "--no-text-prescreen",
         action="store_true",
-        help="Capture a single frame instead of sampling multiple candidates",
+        help="Disable Tesseract/pixel pre-screening; send all extracted frames to Vision",
+    )
+    parser.add_argument(
+        "--scan-window",
+        type=float,
+        default=60.0,
+        help="Seconds of the turn to scan for lower-third text (default: 60)",
     )
     parser.add_argument(
         "--cookies-from-browser",
@@ -893,7 +1010,8 @@ def _cli() -> None:
     sc = ScreenCapture(
         output_dir=args.output_dir,
         use_vision=not args.no_vision,
-        multi_frame=not args.no_multi_frame,
+        scan_window_secs=args.scan_window,
+        text_prescreen=not args.no_text_prescreen,
         cookies_from_browser=args.cookies_from_browser,
         cookies_file=args.cookies,
     )

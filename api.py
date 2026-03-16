@@ -97,6 +97,9 @@ class Job:
     broadcast_date: str = ""
     save_video: bool = False
     video_path: Optional[str] = None  # set after successful video download
+    vision_scan_window: float = 60.0
+    vision_max_scan_frames: int = 20
+    vision_text_prescreen: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -673,6 +676,9 @@ async def submit_job(
     broadcast_channel: str = Form(""),
     broadcast_date: str = Form(""),
     save_video: bool = Form(False),
+    vision_scan_window: float = Form(60.0),
+    vision_max_scan_frames: int = Form(20),
+    vision_text_prescreen: bool = Form(True),
 ):
     _require_hf_token()
 
@@ -695,6 +701,9 @@ async def submit_job(
             broadcast_channel=broadcast_channel,
             broadcast_date=broadcast_date,
             save_video=save_video,
+            vision_scan_window=vision_scan_window,
+            vision_max_scan_frames=vision_max_scan_frames,
+            vision_text_prescreen=vision_text_prescreen,
         )
         with _jobs_lock:
             _jobs[job_id] = job
@@ -725,6 +734,9 @@ async def submit_job(
             broadcast_channel=broadcast_channel,
             broadcast_date=broadcast_date,
             save_video=save_video,
+            vision_scan_window=vision_scan_window,
+            vision_max_scan_frames=vision_max_scan_frames,
+            vision_text_prescreen=vision_text_prescreen,
         )
         with _jobs_lock:
             _jobs[job_id] = job
@@ -1432,7 +1444,7 @@ def get_turn_frame(session_id: str, turn_index: int):
             raise HTTPException(status_code=404, detail="Source file not found on disk")
 
         try:
-            sc = ScreenCapture(output_dir="output", use_vision=False, multi_frame=False)
+            sc = ScreenCapture(output_dir="output", use_vision=False)
             frames_dir.mkdir(parents=True, exist_ok=True)
             playback_url = sc._resolve_source(source_file)
             ok = sc._extract_frame(playback_url, ts, frame_path)
