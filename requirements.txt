@@ -34,3 +34,7 @@ anthropic>=0.46.0
 
 # ── Visualisation (waveform images for audio-only sources) ────────────────────
 matplotlib>=3.8.0
+
+# NER name extraction (optional — see README)
+# After install: python -m spacy download en_core_web_sm
+spacy>=3.7,<4.0

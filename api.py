@@ -91,6 +91,7 @@ class Job:
     max_speakers: Optional[int] = None
     enable_transcription: bool = True
     enable_sentiment: bool = True
+    enable_ner: bool = True
     merge_gap_secs: float = 1.0
     broadcast_channel: str = ""
     broadcast_date: str = ""
@@ -185,6 +186,7 @@ class _ProgressDiarizer:
         hf_token: str,
         enable_transcription: bool,
         enable_sentiment: bool,
+        enable_ner: bool = True,
         num_speakers: Optional[int],
         min_speakers: Optional[int],
         max_speakers: Optional[int],
@@ -194,12 +196,14 @@ class _ProgressDiarizer:
         diarize_band: tuple[int, int],
         transcribe_band: tuple[int, int],
         sentiment_band: tuple[int, int],
+        ner_band: tuple[int, int],
         saving_band: tuple[int, int],
     ):
         self._on_progress = on_progress
         self._diarize_band = diarize_band
         self._transcribe_band = transcribe_band
         self._sentiment_band = sentiment_band
+        self._ner_band = ner_band
         self._saving_band = saving_band
 
         # Load models ─────────────────────────────────────────────────────────
@@ -209,6 +213,7 @@ class _ProgressDiarizer:
             hf_token=hf_token,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            enable_ner=enable_ner,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
@@ -288,6 +293,11 @@ class _ProgressDiarizer:
         pre_merge_turns = list(turns)
         turns = inner._merge_turns(turns)
 
+        # NER name hints ───────────────────────────────────────────────────────
+        self._emit(self._ner_band[0], "ner", "Extracting name hints…")
+        name_hints = inner._extract_name_hints(turns) if inner.enable_ner else {}
+        self._emit(self._ner_band[1], "ner", "Name hints complete")
+
         # Build result ────────────────────────────────────────────────────────
         self._emit(self._saving_band[0], "saving", "Building result…")
         stats = _speaker_stats(turns, total_duration)
@@ -301,6 +311,7 @@ class _ProgressDiarizer:
             speaker_stats=stats,
             original_turns=pre_merge_turns if inner.merge_gap_secs > 0.0 else [],
             merge_gap_secs=inner.merge_gap_secs,
+            name_hints=name_hints,
         )
 
     # ── Transcription with per-turn progress ──────────────────────────────────
@@ -508,7 +519,8 @@ def _run_diarization(
     model_band: tuple[int, int] = (0, 5),
     diarize_band: tuple[int, int] = (5, 55),
     transcribe_band: tuple[int, int] = (55, 80),
-    sentiment_band: tuple[int, int] = (80, 95),
+    sentiment_band: tuple[int, int] = (80, 92),
+    ner_band: tuple[int, int] = (92, 95),
     saving_band: tuple[int, int] = (95, 100),
 ) -> None:
     try:
@@ -521,6 +533,7 @@ def _run_diarization(
             hf_token=HF_TOKEN,
             enable_transcription=job.enable_transcription,
             enable_sentiment=job.enable_sentiment,
+            enable_ner=job.enable_ner,
             num_speakers=job.num_speakers,
             min_speakers=job.min_speakers,
             max_speakers=job.max_speakers,
@@ -530,6 +543,7 @@ def _run_diarization(
             diarize_band=diarize_band,
             transcribe_band=transcribe_band,
             sentiment_band=sentiment_band,
+            ner_band=ner_band,
             saving_band=saving_band,
         )
 
@@ -631,7 +645,8 @@ def _youtube_worker(job_id: str, url: str) -> None:
             model_band=(30, 35),
             diarize_band=(35, 65),
             transcribe_band=(65, 82),
-            sentiment_band=(82, 96),
+            sentiment_band=(82, 93),
+            ner_band=(93, 96),
             saving_band=(96, 100),
         )
 
@@ -653,6 +668,7 @@ async def submit_job(
     max_speakers: Optional[int] = Form(None),
     enable_transcription: bool = Form(True),
     enable_sentiment: bool = Form(True),
+    enable_ner: bool = Form(True),
     merge_gap_secs: float = Form(1.0),
     broadcast_channel: str = Form(""),
     broadcast_date: str = Form(""),
@@ -674,6 +690,7 @@ async def submit_job(
             max_speakers=max_speakers,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            enable_ner=enable_ner,
             merge_gap_secs=merge_gap_secs,
             broadcast_channel=broadcast_channel,
             broadcast_date=broadcast_date,
@@ -703,6 +720,7 @@ async def submit_job(
             max_speakers=max_speakers,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            enable_ner=enable_ner,
             merge_gap_secs=merge_gap_secs,
             broadcast_channel=broadcast_channel,
             broadcast_date=broadcast_date,
@@ -927,6 +945,7 @@ def get_review(session_id: str):
     turns_raw = result.get("turns", [])
     session_data["original_turns"] = result.get("original_turns", [])
     session_data["merge_gap_secs"] = result.get("merge_gap_secs", 1.0)
+    name_hints: dict = result.get("name_hints", {})
 
     # Load appearance links
     with sqlite3.connect(str(cat.db_path)) as cx:
@@ -1028,6 +1047,7 @@ def get_review(session_id: str):
             "total_speaking_time": round(speaking_time, 3),
             "turn_count": len(active_turns),
             "turns": turns_for_speaker,
+            "name_hints": name_hints.get(eph_id, []),
         })
 
     # Sort by total speaking time descending
@@ -1038,6 +1058,38 @@ def get_review(session_id: str):
         "speakers": speakers_out,
         "all_ephemeral_ids": all_ephemeral_ids,
     }
+
+
+@app.post("/review/{session_id}/speakers/{ephemeral_id}/apply-hint", summary="Auto-link a speaker via an NER name hint")
+def apply_hint(session_id: str, ephemeral_id: str, name: str = Form(...)):
+    from catalogue import SpeakerCatalogue
+    cat = SpeakerCatalogue()
+
+    # Verify session exists
+    import sqlite3
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT session_id FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    profiles = cat.search_speakers(name=name)
+    matches = [p for p in profiles if (p.display_name or "").lower() == name.lower()]
+
+    if len(matches) == 0:
+        return {"status": "no_match"}
+    if len(matches) > 1:
+        return {"status": "ambiguous", "matches": [p.display_name for p in matches]}
+
+    matched = matches[0]
+    cat.link_appearance(
+        catalogue_id=matched.catalogue_id,
+        session_id=session_id,
+        ephemeral_id=ephemeral_id,
+    )
+    return {"status": "linked", "catalogue_id": matched.catalogue_id}
 
 
 @app.post("/review/{session_id}/turns/{turn_index}/assign", summary="Reassign a single turn to a different speaker")

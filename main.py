@@ -148,6 +148,7 @@ def cmd_process(args: argparse.Namespace) -> None:
         hf_token=_require_hf_token(),
         enable_transcription=not args.no_transcription,
         enable_sentiment=not args.no_sentiment,
+        enable_ner=not args.no_ner,
         num_speakers=args.num_speakers,
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
@@ -192,6 +193,12 @@ def cmd_process(args: argparse.Namespace) -> None:
             f"  {s['turn_count']:>5}"
             f"  {_sentiment_label(s.get('avg_sentiment'))}"
         )
+    if not args.no_ner and result.name_hints:
+        print("─" * w)
+        print("  NER hints:")
+        for sid, names in sorted(result.name_hints.items()):
+            if names:
+                print(f"    {sid}  →  {', '.join(names)}")
     print("═" * w + "\n")
 
     # Save JSON ──────────────────────────────────────────────────────────────
@@ -279,6 +286,7 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
         hf_token=_require_hf_token(),
         enable_transcription=not args.no_transcription,
         enable_sentiment=not args.no_sentiment,
+        enable_ner=not args.no_ner,
         num_speakers=args.num_speakers,
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
@@ -320,6 +328,12 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
             f"  {s['turn_count']:>5}"
             f"  {_sentiment_label(s.get('avg_sentiment'))}"
         )
+    if not args.no_ner and result.name_hints:
+        print("─" * w)
+        print("  NER hints:")
+        for sid, names in sorted(result.name_hints.items()):
+            if names:
+                print(f"    {sid}  →  {', '.join(names)}")
     print("═" * w + "\n")
 
     # ── Step 4: save JSON ─────────────────────────────────────────────────
@@ -534,6 +548,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Skip screenshot and Vision speaker identification (MP4 only)")
     pr.add_argument("--no-vision", action="store_true",
                     help="Take screenshots but skip the Claude Vision API call (MP4 only)")
+    pr.add_argument("--no-ner", action="store_true",
+                    help="Skip NER name extraction from transcripts")
     pr.add_argument("--merge-gap", type=float, default=1.0,
                     help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
 
@@ -583,6 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Take screenshots but skip the Claude Vision API call",
     )
+    yt.add_argument("--no-ner", action="store_true",
+                    help="Skip NER name extraction from transcripts")
     yt.add_argument("--merge-gap", type=float, default=1.0,
                     help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
     # sessions ───────────────────────────────────────────────────────────────

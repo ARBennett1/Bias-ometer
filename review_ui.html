@@ -99,6 +99,7 @@
   #toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
   .toast { padding: 10px 16px; border-radius: var(--radius); font-size: 13px; min-width: 200px; max-width: 350px; animation: fadeIn 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
   .toast-success { background: #16a34a; color: white; }
+  .toast-warn { background: #d97706; color: white; }
   .toast-error { background: #dc2626; color: white; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
   /* Modal */
@@ -134,6 +135,11 @@
   .sub-turn-row { font-size: 11px; color: var(--muted); padding: 2px 0; line-height: 1.4; }
   .sub-turn-row .sub-ts { font-family: monospace; color: var(--accent); margin-right: 6px; }
   .sub-turn-row .sub-text { color: var(--text); }
+  /* NER hints */
+  .ner-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+  .ner-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-right: 2px; }
+  .ner-hint-btn { padding: 2px 8px; border-radius: 20px; border: 1px solid #6366f144; background: #6366f111; color: #a5b4fc; font-size: 10px; cursor: pointer; transition: background 0.15s, border-color 0.15s; white-space: nowrap; }
+  .ner-hint-btn:hover { background: #6366f133; border-color: var(--accent); color: var(--text); }
 </style>
 </head>
 <body>
@@ -360,8 +366,13 @@ function renderUI() {
   const totalMerged = allTurnsFlat.filter(t => !t.deleted && (t.merged_count || 1) > 1).length;
   const deletedPart = totalDeleted > 0 ? ` · ${totalDeleted} deleted` : '';
   const mergedPart = totalMerged > 0 ? ` · ${totalMerged} merged` : '';
+  const nerHintCount = speakers.filter(sp => {
+    const isLinked = sp.display_name && sp.display_name !== sp.ephemeral_id;
+    return !isLinked && Array.isArray(sp.name_hints) && sp.name_hints.length > 0;
+  }).length;
+  const nerPart = nerHintCount > 0 ? ` · ${nerHintCount} NER hint${nerHintCount !== 1 ? 's' : ''}` : '';
   document.getElementById('transcript-header-text').textContent =
-    `${totalTurns} turns · ${session.num_speakers} speakers · ${totalOverrides} override${totalOverrides !== 1 ? 's' : ''}${deletedPart}${mergedPart}`;
+    `${totalTurns} turns · ${session.num_speakers} speakers · ${totalOverrides} override${totalOverrides !== 1 ? 's' : ''}${deletedPart}${mergedPart}${nerPart}`;
 
   renderSpeakers(speakers, session);
   renderTranscript(speakers, all_ephemeral_ids, session);
@@ -397,6 +408,15 @@ function renderSpeakers(speakers, session) {
       badgeHtml = `<span class="confidence-chip ${cls}">${sp.suggested_name} [${sp.confidence}]</span>`;
     }
 
+    const isLinked = sp.display_name && sp.display_name !== sp.ephemeral_id;
+    let nerHintsHtml = '';
+    if (!isLinked && Array.isArray(sp.name_hints) && sp.name_hints.length > 0) {
+      const btnHtml = sp.name_hints.map(n =>
+        `<button class="ner-hint-btn" onclick="event.stopPropagation();applyHint('${sp.ephemeral_id}',${JSON.stringify(n)})">${n}</button>`
+      ).join('');
+      nerHintsHtml = `<div class="ner-hints"><span class="ner-label">NER</span>${btnHtml}</div>`;
+    }
+
     const mergeOptions = speakers
       .filter(s => s.ephemeral_id !== sp.ephemeral_id)
       .map(s => `<option value="${s.ephemeral_id}">${s.display_name || s.ephemeral_id}</option>`)
@@ -411,6 +431,7 @@ function renderSpeakers(speakers, session) {
           ${sp.affiliation || sp.role ? `<div class="speaker-meta">${[sp.affiliation, sp.role].filter(Boolean).join(' · ')}</div>` : ''}
           <div class="speaker-eph">${sp.ephemeral_id}</div>
           ${badgeHtml}
+          ${nerHintsHtml}
         </div>
       </div>
       <div class="time-bar-wrap">
@@ -664,6 +685,31 @@ function clearFilter() {
     btn.textContent = '⊙ Filter';
   });
   document.getElementById('filter-bar').classList.remove('visible');
+}
+
+// ── NER hint application ───────────────────────────────────────────────────────
+async function applyHint(ephemeralId, name) {
+  if (!currentSession) return;
+  try {
+    const fd = new FormData();
+    fd.append('name', name);
+    const res = await api('POST', `/review/${currentSession}/speakers/${ephemeralId}/apply-hint`, fd);
+    if (res.status === 'linked') {
+      toast('Linked via NER hint');
+      await loadReview(currentSession);
+    } else if (res.status === 'no_match') {
+      toast(`No catalogue match for '${name}' — use Search to add them`, 'warn');
+    } else if (res.status === 'ambiguous') {
+      toast('Ambiguous — use Search to pick the right entry', 'warn');
+      openSearch(ephemeralId);
+      setTimeout(() => {
+        const inp = document.getElementById('search-input');
+        if (inp) { inp.value = name; doSearch(); }
+      }, 50);
+    }
+  } catch (e) {
+    toast('Apply hint failed: ' + e.message, 'error');
+  }
 }
 
 // ── Merge tuning ───────────────────────────────────────────────────────────────

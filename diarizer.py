@@ -15,6 +15,8 @@ available.
 from __future__ import annotations
 
 import logging
+import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,10 +92,15 @@ class DiarizationResult:
         {
             "total_speaking_time": float,
             "turn_count": int,
-            "pct_of_audio": float,         
-            "avg_turn_duration": float,    
-            "avg_sentiment": Optional[float], 
+            "pct_of_audio": float,
+            "avg_turn_duration": float,
+            "avg_sentiment": Optional[float],
         }
+    name_hints: dict[str, list[str]]
+        Populated by the NER step when enable_ner=True and transcription is
+        enabled. Maps each speaker_id to an ordered list of candidate name
+        strings, ranked by frequency of occurrence descending (up to 5 per
+        speaker).
     """
 
     source_file: str
@@ -105,6 +112,7 @@ class DiarizationResult:
     speaker_stats: dict = field(default_factory=dict)
     original_turns: list[Turn] = field(default_factory=list)
     merge_gap_secs: float = 1.0
+    name_hints: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -130,6 +138,7 @@ class NewsDiarizer:
         hf_token: str,
         enable_transcription: bool = True,
         enable_sentiment: bool = True,
+        enable_ner: bool = True,
         device: Optional[str] = None,
         num_speakers: Optional[int] = None,
         min_speakers: Optional[int] = None,
@@ -145,6 +154,10 @@ class NewsDiarizer:
             Transcribe each turn with Whisper.
         enable_sentiment:
             Run sentiment on each transcript.
+        enable_ner:
+            Run spaCy NER over transcripts to extract PERSON name hints per
+            speaker. Requires enable_transcription=True; silently skipped
+            otherwise.
         device:
             "mps" | "cuda" | "cpu". Auto-detected when None.
         num_speakers:
@@ -161,6 +174,7 @@ class NewsDiarizer:
 
         self.enable_transcription = enable_transcription
         self.enable_sentiment = enable_sentiment
+        self.enable_ner = enable_ner
         self.num_speakers = num_speakers
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
@@ -209,6 +223,57 @@ class NewsDiarizer:
         self._sentiment_pipe: Any | None = None
         if enable_sentiment:
             self._load_sentiment()
+
+        # ==============================================================
+        # spaCy NER (optional — skipped if transcription is off)
+        # ==============================================================
+        self._nlp = None
+        if self.enable_ner and self.enable_transcription:
+            try:
+                import sys as _sys
+                # spaCy depends on a third-party package also called 'catalogue'.
+                # Our local catalogue.py shadows it because the project directory
+                # sits at the front of sys.path. Guard the import by temporarily
+                # removing our directory and our catalogue module from Python's
+                # search paths so spaCy can find its real dependency.
+                if 'spacy' not in _sys.modules:
+                    _proj = str(Path(__file__).parent.resolve())
+                    _removed: list[tuple[int, str]] = []
+                    for _i, _p in reversed(list(enumerate(_sys.path))):
+                        _r = str(Path(_p).resolve()) if _p else str(Path.cwd().resolve())
+                        if _r == _proj:
+                            _removed.append((_i, _p))
+                            del _sys.path[_i]
+                    _our_cat = _sys.modules.pop('catalogue', None)
+                    _is_ours = _our_cat is not None and not hasattr(_our_cat, 'create')
+                    if not _is_ours and _our_cat is not None:
+                        _sys.modules['catalogue'] = _our_cat  # restore spaCy's if present
+                    try:
+                        import spacy
+                    finally:
+                        for _i, _p in sorted(_removed):
+                            _sys.path.insert(_i, _p)
+                        if _is_ours:
+                            _sys.modules['catalogue'] = _our_cat
+                else:
+                    import spacy
+                self._nlp = spacy.load("en_core_web_sm")
+                log.info("spaCy en_core_web_sm loaded for NER")
+            except ImportError:
+                log.warning(
+                    "spaCy not installed — NER disabled. "
+                    "pip install spacy && python -m spacy download en_core_web_sm"
+                )
+            except OSError:
+                log.warning(
+                    "spaCy model en_core_web_sm not found — NER disabled. "
+                    "Run: python -m spacy download en_core_web_sm"
+                )
+            except AttributeError as e:
+                log.warning(
+                    f"spaCy import conflict (likely 'catalogue' name collision) — "
+                    f"NER disabled. ({e})"
+                )
 
     # ==================================================================
     # Model loaders
@@ -331,6 +396,11 @@ class NewsDiarizer:
         turns = self._merge_turns(turns)
 
         # ==============================================================
+        # 4c. NER name hints
+        # ==============================================================
+        name_hints = self._extract_name_hints(turns) if self.enable_ner else {}
+
+        # ==============================================================
         # 5. Per-speaker summary
         # ==============================================================
         stats = _speaker_stats(turns, total_duration)
@@ -345,6 +415,7 @@ class NewsDiarizer:
             speaker_stats=stats,
             original_turns=pre_merge_turns if self.merge_gap_secs > 0.0 else [],
             merge_gap_secs=self.merge_gap_secs,
+            name_hints=name_hints,
         )
 
     # ==================================================================
@@ -421,6 +492,89 @@ class NewsDiarizer:
                 turn.sentiment, turn.sentiment_score = "neutral", 0.0
         log.info("  Sentiment complete")
         return turns
+
+    def _extract_name_hints(self, turns: list[Turn]) -> dict[str, list[str]]:
+        """
+        Run spaCy NER and regex patterns over each speaker's transcripts to
+        extract PERSON entity candidates. Returns a dict mapping speaker_id
+        to a frequency-ranked list of name strings (up to 5 per speaker).
+        """
+        if self._nlp is None:
+            return {}
+
+        # Build per-speaker corpus
+        speaker_corpus: dict[str, str] = {}
+        for turn in turns:
+            text = (turn.transcript or "").strip()
+            if not text:
+                continue
+            if turn.speaker_id not in speaker_corpus:
+                speaker_corpus[turn.speaker_id] = ""
+            speaker_corpus[turn.speaker_id] += text + "\n"
+
+        if not speaker_corpus:
+            return {}
+
+        # Patterns for self-identification and reporter sign-off
+        _SELF_ID = re.compile(
+            r"(?:I(?:'m| am))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        )
+        _REPORTER = re.compile(
+            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:reporting|here|joining)",
+        )
+
+        # Introduction patterns — anchor names the guest; attribute to next speaker
+        _INTRO_PATTERNS = [
+            re.compile(r"joining me (?:now )?is ([A-Z][a-z]+ (?:[A-Z][a-z]+ )+)", re.IGNORECASE),
+            re.compile(r"(?:welcome|with me now)[,\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)", re.IGNORECASE),
+        ]
+
+        # Per-speaker frequency counters
+        counters: dict[str, Counter] = {sid: Counter() for sid in speaker_corpus}
+
+        # --- spaCy + regex over per-speaker corpus ---
+        for sid, text in speaker_corpus.items():
+            doc = self._nlp(text)
+            for ent in doc.ents:
+                if ent.label_ == "PERSON":
+                    name = ent.text.strip()
+                    if len(name) >= 2 and " " in name:
+                        counters[sid][name] += 1
+
+            for m in _SELF_ID.finditer(text):
+                counters[sid][m.group(1).strip()] += 1
+            for m in _REPORTER.finditer(text):
+                counters[sid][m.group(1).strip()] += 1
+
+        # --- Introduction pattern: attribute to next speaker ---
+        sorted_turns = sorted(turns, key=lambda t: t.start)
+        for i, turn in enumerate(sorted_turns):
+            text = (turn.transcript or "").strip()
+            if not text:
+                continue
+            for pat in _INTRO_PATTERNS:
+                for m in pat.finditer(text):
+                    name = m.group(1).strip()
+                    if not name:
+                        continue
+                    # Find the next speaker after this turn ends
+                    next_speaker: Optional[str] = None
+                    for j in range(i + 1, len(sorted_turns)):
+                        if sorted_turns[j].speaker_id != turn.speaker_id:
+                            next_speaker = sorted_turns[j].speaker_id
+                            break
+                    if next_speaker and next_speaker in counters:
+                        counters[next_speaker][name] += 1
+
+        # Build result: top-5 names per speaker, frequency descending
+        result: dict[str, list[str]] = {}
+        for sid, counter in counters.items():
+            if counter:
+                result[sid] = [name for name, _ in counter.most_common(5)]
+
+        n_with_hints = sum(1 for v in result.values() if v)
+        log.info(f"  NER: name hints found for {n_with_hints}/{len(speaker_corpus)} speakers")
+        return result
 
 # ======================================================================
 # Public merge helper — usable outside the pipeline (e.g. API re-merge)

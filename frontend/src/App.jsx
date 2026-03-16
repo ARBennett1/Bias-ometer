@@ -1359,6 +1359,25 @@ function ReviewView({ sessionId, onBack }) {
     } catch (e) { showToast('Link error: ' + e.message, 'error') }
   }
 
+  async function applyHint(ephId, name) {
+    try {
+      const fd = new FormData()
+      fd.append('name', name)
+      const res = await apiFetch(`/review/${sessionId}/speakers/${ephId}/apply-hint`, { method: 'POST', body: fd })
+      if (res.status === 'linked') {
+        showToast(`Linked via NER hint: ${name}`)
+        await reload()
+      } else if (res.status === 'no_match') {
+        showToast(`No catalogue match for "${name}" — use Search to add them`, 'error')
+      } else if (res.status === 'ambiguous') {
+        showToast('Ambiguous match — use Search to pick the right entry', 'error')
+        setSearchModal({ ephId })
+        setSearchQuery(name)
+        doSearch(name)
+      }
+    } catch (e) { showToast('Apply hint failed: ' + e.message, 'error') }
+  }
+
   function doStepFrame(delta) {
     if (!reviewData) return
     const allSorted = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index)
@@ -1427,6 +1446,10 @@ function ReviewView({ sessionId, onBack }) {
   const totalTurns = speakers.reduce((a, s) => a + s.turn_count, 0)
   const totalOverrides = allTurns.filter(t => t.overridden && !t.deleted).length
   const totalDeleted   = allTurns.filter(t => t.deleted).length
+  const nerHintCount   = speakers.filter(sp => {
+    const isLinked = sp.display_name && sp.display_name !== sp.ephemeral_id
+    return !isLinked && sp.name_hints?.length > 0
+  }).length
 
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
@@ -1494,6 +1517,18 @@ function ReviewView({ sessionId, onBack }) {
                         {sp.suggested_name} [{sp.confidence}]
                       </span>
                     )}
+                    {(() => {
+                      const isLinked = sp.display_name && sp.display_name !== sp.ephemeral_id
+                      return !isLinked && sp.name_hints?.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, marginTop: 5 }}>
+                          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--dim)', marginRight: 2 }}>NER</span>
+                          {sp.name_hints.map(n => (
+                            <button key={n} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 20, border: '1px solid #6366f144', background: '#6366f111', color: '#a5b4fc', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                              onClick={e => { e.stopPropagation(); applyHint(sp.ephemeral_id, n) }}>{n}</button>
+                          ))}
+                        </div>
+                      )
+                    })()}
                   </div>
                 </div>
                 {/* Time bar */}
@@ -1545,6 +1580,7 @@ function ReviewView({ sessionId, onBack }) {
           <div style={{ fontSize: 12, color: 'var(--dim)', flex: 1 }}>
             {totalTurns} turns · {session.num_speakers} speakers · {totalOverrides} override{totalOverrides !== 1 ? 's' : ''}
             {totalDeleted > 0 && ` · ${totalDeleted} deleted`}
+            {nerHintCount > 0 && ` · ${nerHintCount} NER hint${nerHintCount !== 1 ? 's' : ''}`}
             {activeFilter && (
               <span style={{ color: 'var(--accent)', marginLeft: 8 }}>
                 Filtered: {speakerLookup[activeFilter]?.display_name || activeFilter} —{' '}
