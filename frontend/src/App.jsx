@@ -1137,7 +1137,8 @@ function ReviewView({ sessionId, onBack }) {
   const [reviewData, setReviewData]     = useState(null)
   const [loading, setLoading]           = useState(true)
   const [toast, setToast]               = useState(null)
-  const [activeFilter, setActiveFilter] = useState(null)
+  const [activeSpeakerFilters, setActiveSpeakerFilters] = useState(new Set())
+  const [hideNoTranscript, setHideNoTranscript] = useState(false)
   const [playingIdx, setPlayingIdx]     = useState(null)
   const audioEls                        = useRef({})
   const [reassignOpen, setReassignOpen] = useState(null)
@@ -1439,9 +1440,13 @@ function ReviewView({ sessionId, onBack }) {
   const speakerLookup = Object.fromEntries(speakers.map(s => [s.ephemeral_id, s]))
   const allTurns = speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index)
   const displayTurns = compressMode ? buildCompressedRuns(allTurns) : allTurns
-  const filteredTurns = activeFilter
-    ? displayTurns.filter(t => (t.deleted ? t.original_speaker : t.effective_speaker) === activeFilter)
-    : displayTurns
+  let filteredTurns = displayTurns
+  if (activeSpeakerFilters.size > 0) {
+    filteredTurns = filteredTurns.filter(t => activeSpeakerFilters.has(t.deleted ? t.original_speaker : t.effective_speaker))
+  }
+  if (hideNoTranscript) {
+    filteredTurns = filteredTurns.filter(t => t.transcript)
+  }
   const shownTurns = previewTurns || filteredTurns
   const totalTurns = speakers.reduce((a, s) => a + s.turn_count, 0)
   const totalOverrides = allTurns.filter(t => t.overridden && !t.deleted).length
@@ -1490,7 +1495,7 @@ function ReviewView({ sessionId, onBack }) {
             const color    = spkColor(sp.ephemeral_id, all_ephemeral_ids)
             const pct      = ((sp.total_speaking_time / (session.total_duration || 1)) * 100).toFixed(1)
             const initials = sp.ephemeral_id.replace('SPEAKER_', 'S')
-            const isFiltered = activeFilter === sp.ephemeral_id
+            const isFiltered = activeSpeakerFilters.has(sp.ephemeral_id)
             return (
               <div key={sp.ephemeral_id}
                 style={{ background: isFiltered ? 'var(--surf3)' : 'var(--surf2)', border: `1px solid ${isFiltered ? color + '66' : 'var(--bord)'}`, borderRadius: 8, padding: '10px 12px', marginBottom: 8, cursor: 'pointer' }}
@@ -1547,7 +1552,7 @@ function ReviewView({ sessionId, onBack }) {
                   <button className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }}
                     onClick={() => { setMergeExpandEph(v => v === sp.ephemeral_id ? null : sp.ephemeral_id); setMergeTargetVal('') }}>⇒ Merge</button>
                   <button className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '3px 8px', ...(isFiltered ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
-                    onClick={() => setActiveFilter(f => f === sp.ephemeral_id ? null : sp.ephemeral_id)}>⊙ {isFiltered ? 'Clear' : 'Filter'}</button>
+                    onClick={() => setActiveSpeakerFilters(prev => { const next = new Set(prev); if (next.has(sp.ephemeral_id)) next.delete(sp.ephemeral_id); else next.add(sp.ephemeral_id); return next })}>⊙ {isFiltered ? 'On' : 'Filter'}</button>
                 </div>
                 {/* Merge inline form */}
                 {mergeExpandEph === sp.ephemeral_id && (
@@ -1581,14 +1586,18 @@ function ReviewView({ sessionId, onBack }) {
             {totalTurns} turns · {session.num_speakers} speakers · {totalOverrides} override{totalOverrides !== 1 ? 's' : ''}
             {totalDeleted > 0 && ` · ${totalDeleted} deleted`}
             {nerHintCount > 0 && ` · ${nerHintCount} NER hint${nerHintCount !== 1 ? 's' : ''}`}
-            {activeFilter && (
+            {activeSpeakerFilters.size > 0 && (
               <span style={{ color: 'var(--accent)', marginLeft: 8 }}>
-                Filtered: {speakerLookup[activeFilter]?.display_name || activeFilter} —{' '}
-                <button className="link-btn" style={{ fontSize: 12 }} onClick={() => setActiveFilter(null)}>clear</button>
+                Speakers: {[...activeSpeakerFilters].map(id => speakerLookup[id]?.display_name || id).join(', ')} —{' '}
+                <button className="link-btn" style={{ fontSize: 12 }} onClick={() => setActiveSpeakerFilters(new Set())}>clear</button>
               </span>
             )}
             {previewTurns && <span style={{ color: 'var(--warn)', marginLeft: 8 }}>● Preview mode</span>}
           </div>
+          <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, ...(hideNoTranscript ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+            onClick={() => setHideNoTranscript(v => !v)}>
+            ⊘ {hideNoTranscript ? 'No transcript (hidden)' : 'No transcript'}
+          </button>
           <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, ...(compressMode ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
             onClick={() => setCompressMode(v => !v)}>
             ⇒ {compressMode ? 'Compress (on)' : 'Compress'}
