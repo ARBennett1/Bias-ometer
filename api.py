@@ -91,6 +91,7 @@ class Job:
     max_speakers: Optional[int] = None
     enable_transcription: bool = True
     enable_sentiment: bool = True
+    merge_gap_secs: float = 1.0
     broadcast_channel: str = ""
     broadcast_date: str = ""
     save_video: bool = False
@@ -187,6 +188,7 @@ class _ProgressDiarizer:
         num_speakers: Optional[int],
         min_speakers: Optional[int],
         max_speakers: Optional[int],
+        merge_gap_secs: float,
         on_progress: Callable[[int, str, str], None],  # (pct, stage, detail)
         model_band: tuple[int, int],
         diarize_band: tuple[int, int],
@@ -210,6 +212,7 @@ class _ProgressDiarizer:
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
+            merge_gap_secs=merge_gap_secs,
         )
         self._emit(model_band[1], "models", "Models ready")
 
@@ -281,6 +284,10 @@ class _ProgressDiarizer:
         if inner.enable_sentiment and inner._sentiment_pipe:
             turns = self._sentiment(turns)
 
+        # Merge contiguous same-speaker turns ─────────────────────────────────
+        pre_merge_turns = list(turns)
+        turns = inner._merge_turns(turns)
+
         # Build result ────────────────────────────────────────────────────────
         self._emit(self._saving_band[0], "saving", "Building result…")
         stats = _speaker_stats(turns, total_duration)
@@ -292,6 +299,8 @@ class _ProgressDiarizer:
             num_speakers=len(unique_speakers),
             turns=turns,
             speaker_stats=stats,
+            original_turns=pre_merge_turns if inner.merge_gap_secs > 0.0 else [],
+            merge_gap_secs=inner.merge_gap_secs,
         )
 
     # ── Transcription with per-turn progress ──────────────────────────────────
@@ -515,6 +524,7 @@ def _run_diarization(
             num_speakers=job.num_speakers,
             min_speakers=job.min_speakers,
             max_speakers=job.max_speakers,
+            merge_gap_secs=job.merge_gap_secs,
             on_progress=_make_progress_cb(job_id),
             model_band=model_band,
             diarize_band=diarize_band,
@@ -643,6 +653,7 @@ async def submit_job(
     max_speakers: Optional[int] = Form(None),
     enable_transcription: bool = Form(True),
     enable_sentiment: bool = Form(True),
+    merge_gap_secs: float = Form(1.0),
     broadcast_channel: str = Form(""),
     broadcast_date: str = Form(""),
     save_video: bool = Form(False),
@@ -663,6 +674,7 @@ async def submit_job(
             max_speakers=max_speakers,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            merge_gap_secs=merge_gap_secs,
             broadcast_channel=broadcast_channel,
             broadcast_date=broadcast_date,
             save_video=save_video,
@@ -691,6 +703,7 @@ async def submit_job(
             max_speakers=max_speakers,
             enable_transcription=enable_transcription,
             enable_sentiment=enable_sentiment,
+            merge_gap_secs=merge_gap_secs,
             broadcast_channel=broadcast_channel,
             broadcast_date=broadcast_date,
             save_video=save_video,
@@ -912,6 +925,8 @@ def get_review(session_id: str):
         raise HTTPException(status_code=404, detail="Session has no result data")
     result = json.loads(result_json)
     turns_raw = result.get("turns", [])
+    session_data["original_turns"] = result.get("original_turns", [])
+    session_data["merge_gap_secs"] = result.get("merge_gap_secs", 1.0)
 
     # Load appearance links
     with sqlite3.connect(str(cat.db_path)) as cx:
@@ -1157,8 +1172,117 @@ def merge_speaker(
     }
 
 
+@app.post("/review/{session_id}/remerge", summary="Preview a new merge-gap setting without saving")
+def preview_remerge(session_id: str, merge_gap_secs: float = Form(...)):
+    import sqlite3
+    from diarizer import Turn, merge_turns
+
+    cat_mod = __import__("catalogue", fromlist=["SpeakerCatalogue"])
+    cat = cat_mod.SpeakerCatalogue()
+
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    result = json.loads(row["result_json"])
+    # Use original (pre-merge) turns when available, else fall back to current turns
+    raw = result.get("original_turns") or result.get("turns", [])
+
+    _TURN_FIELDS = set(Turn.__dataclass_fields__.keys())
+    turns = [Turn(**{k: v for k, v in t.items() if k in _TURN_FIELDS}) for t in raw]
+    # Ensure merged_count defaults
+    for t in turns:
+        if t.merged_count == 0:
+            t.merged_count = 1
+
+    merged = merge_turns(turns, merge_gap_secs)
+    return {
+        "original_count": len(turns),
+        "merged_count": len(merged),
+        "merge_gap_secs": merge_gap_secs,
+        "turns": [
+            {
+                "speaker_id": t.speaker_id,
+                "start": t.start,
+                "end": t.end,
+                "duration": t.duration,
+                "transcript": t.transcript,
+                "sentiment": t.sentiment,
+                "sentiment_score": t.sentiment_score,
+                "merged_count": t.merged_count,
+            }
+            for t in merged
+        ],
+    }
+
+
+@app.post("/review/{session_id}/apply-remerge", summary="Apply a new merge-gap and save to the session (clears overrides)")
+def apply_remerge(session_id: str, merge_gap_secs: float = Form(...)):
+    import sqlite3
+    from diarizer import Turn, merge_turns, _speaker_stats
+
+    cat_mod = __import__("catalogue", fromlist=["SpeakerCatalogue"])
+    cat = cat_mod.SpeakerCatalogue()
+
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.row_factory = sqlite3.Row
+        row = cx.execute(
+            "SELECT result_json, total_duration FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    result = json.loads(row["result_json"])
+    total_duration = row["total_duration"] or 1.0
+
+    raw = result.get("original_turns") or result.get("turns", [])
+    _TURN_FIELDS = set(Turn.__dataclass_fields__.keys())
+    turns = [Turn(**{k: v for k, v in t.items() if k in _TURN_FIELDS}) for t in raw]
+    for t in turns:
+        if t.merged_count == 0:
+            t.merged_count = 1
+
+    merged = merge_turns(turns, merge_gap_secs)
+    new_stats = _speaker_stats(merged, total_duration)
+
+    # Update result_json with new turns, stats, and merge settings
+    from dataclasses import asdict
+    result["turns"] = [asdict(t) for t in merged]
+    result["speaker_stats"] = new_stats
+    result["original_turns"] = [asdict(t) for t in turns]
+    result["merge_gap_secs"] = merge_gap_secs
+
+    new_json = json.dumps(result, indent=2)
+
+    with sqlite3.connect(str(cat.db_path)) as cx:
+        cx.execute(
+            "UPDATE sessions SET result_json=? WHERE session_id=?",
+            (new_json, session_id),
+        )
+        # Clear overrides — they reference old turn indices
+        cx.execute("DELETE FROM turn_overrides WHERE session_id=?", (session_id,))
+
+    log.info(f"Re-merged session {session_id}: {len(raw)} → {len(merged)} turns (gap={merge_gap_secs}s)")
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "original_count": len(raw),
+        "merged_count": len(merged),
+        "merge_gap_secs": merge_gap_secs,
+    }
+
+
 @app.get("/review/{session_id}/audio/{turn_index}", summary="Stream audio clip for a single turn")
-def get_turn_audio(session_id: str, turn_index: int):
+def get_turn_audio(
+    session_id: str,
+    turn_index: int,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+):
     import sqlite3, json, subprocess, tempfile
     from catalogue import SpeakerCatalogue
 
@@ -1184,8 +1308,9 @@ def get_turn_audio(session_id: str, turn_index: int):
         raise HTTPException(status_code=400, detail=f"turn_index {turn_index} out of range")
 
     turn = turns[turn_index]
-    start = turn.get("start", 0)
-    end = turn.get("end", 0)
+    # Allow caller to override start/end (used when playing a compressed span)
+    start = start if start is not None else turn.get("start", 0)
+    end = end if end is not None else turn.get("end", 0)
     duration = end - start
 
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir="/tmp")

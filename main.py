@@ -151,6 +151,7 @@ def cmd_process(args: argparse.Namespace) -> None:
         num_speakers=args.num_speakers,
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
+        merge_gap_secs=args.merge_gap,
     )
 
     result = diarizer.process(
@@ -177,6 +178,10 @@ def cmd_process(args: argparse.Namespace) -> None:
     print(f"  File    : {Path(result.source_file).name}")
     print(f"  Length  : {result.total_duration:.1f}s")
     print(f"  Speakers: {result.num_speakers}")
+    if args.merge_gap > 0:
+        print(f"  Merged gap : {args.merge_gap}s")
+    else:
+        print(f"  Merged gap : disabled")
     print("─" * w)
     print(f"  {'Speaker':<14} {'Time':>8}  {'%Audio':>7}  {'Turns':>5}  Sentiment")
     print("─" * w)
@@ -277,6 +282,7 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
         num_speakers=args.num_speakers,
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
+        merge_gap_secs=args.merge_gap,
     )
 
     result = diarizer.process(
@@ -298,6 +304,10 @@ def cmd_process_youtube(args: argparse.Namespace) -> None:
     print(f"  Uploaded: {meta.upload_date}")
     print(f"  Length  : {result.total_duration:.1f}s")
     print(f"  Speakers: {result.num_speakers}")
+    if args.merge_gap > 0:
+        print(f"  Merged gap : {args.merge_gap}s")
+    else:
+        print(f"  Merged gap : disabled")
     if video_path:
         print(f"  Video   : {video_path}")
     print("─" * w)
@@ -524,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Skip screenshot and Vision speaker identification (MP4 only)")
     pr.add_argument("--no-vision", action="store_true",
                     help="Take screenshots but skip the Claude Vision API call (MP4 only)")
+    pr.add_argument("--merge-gap", type=float, default=1.0,
+                    help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
 
     # process-youtube ────────────────────────────────────────────────────────
     yt = sub.add_parser("process-youtube", help="Download and diarise a YouTube video")
@@ -571,6 +583,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Take screenshots but skip the Claude Vision API call",
     )
+    yt.add_argument("--merge-gap", type=float, default=1.0,
+                    help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
     # sessions ───────────────────────────────────────────────────────────────
     sub.add_parser("sessions", help="List recorded sessions")
 

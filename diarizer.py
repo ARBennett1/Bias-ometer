@@ -53,14 +53,18 @@ class Turn:
     sentiment_score: Optional[float]
         Optional sentiment score (-1.0 to +1.0, where positive is more
         positive sentiment).
+    merged_count: int
+        Number of original pyannote turns collapsed into this one by the
+        contiguous-speaker merge step (1 means no merging occurred).
     """
     speaker_id: str
     start: float
-    end: float              
+    end: float
     duration: float
     transcript: Optional[str] = None
     sentiment: Optional[str] = None
     sentiment_score: Optional[float] = None
+    merged_count: int = 1
 
 @dataclass
 class DiarizationResult:
@@ -99,6 +103,8 @@ class DiarizationResult:
     num_speakers: int
     turns: list[Turn] = field(default_factory=list)
     speaker_stats: dict = field(default_factory=dict)
+    original_turns: list[Turn] = field(default_factory=list)
+    merge_gap_secs: float = 1.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -128,6 +134,7 @@ class NewsDiarizer:
         num_speakers: Optional[int] = None,
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
+        merge_gap_secs: float = 1.0,
     ):
         """
         Parameters
@@ -146,6 +153,10 @@ class NewsDiarizer:
             Lower bound hint for speaker count.
         max_speakers:
             Upper bound hint for speaker count.
+        merge_gap_secs:
+            Maximum silence gap in seconds between consecutive turns by the
+            same speaker that will be merged into one. Set to 0.0 to disable
+            merging entirely.
         """
 
         self.enable_transcription = enable_transcription
@@ -153,6 +164,7 @@ class NewsDiarizer:
         self.num_speakers = num_speakers
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
+        self.merge_gap_secs = merge_gap_secs
 
         # ==============================================================
         # Device selection
@@ -313,6 +325,12 @@ class NewsDiarizer:
             turns = self._run_sentiment(turns)
 
         # ==============================================================
+        # 4b. Merge contiguous same-speaker turns
+        # ==============================================================
+        pre_merge_turns = list(turns)
+        turns = self._merge_turns(turns)
+
+        # ==============================================================
         # 5. Per-speaker summary
         # ==============================================================
         stats = _speaker_stats(turns, total_duration)
@@ -325,11 +343,23 @@ class NewsDiarizer:
             num_speakers=len(unique_speakers),
             turns=turns,
             speaker_stats=stats,
+            original_turns=pre_merge_turns if self.merge_gap_secs > 0.0 else [],
+            merge_gap_secs=self.merge_gap_secs,
         )
 
     # ==================================================================
     # Internal steps
     # ==================================================================
+
+    def _merge_turns(self, turns: list[Turn]) -> list[Turn]:
+        """Merge consecutive same-speaker turns separated by a small gap."""
+        merged = merge_turns(turns, self.merge_gap_secs)
+        log.info(
+            f"  Turn merge: {len(turns)} → {len(merged)} turns "
+            f"(gap ≤ {self.merge_gap_secs}s)"
+        )
+        return merged
+
     def _transcribe(
         self,
         waveform: torch.Tensor,
@@ -391,6 +421,87 @@ class NewsDiarizer:
                 turn.sentiment, turn.sentiment_score = "neutral", 0.0
         log.info("  Sentiment complete")
         return turns
+
+# ======================================================================
+# Public merge helper — usable outside the pipeline (e.g. API re-merge)
+# ======================================================================
+
+def merge_turns(turns: list[Turn], gap_secs: float) -> list[Turn]:
+    """
+    Merge consecutive same-speaker turns whose silence gap is ≤ gap_secs.
+
+    Pass gap_secs=0.0 to disable (returns turns unchanged).
+    Each merged Turn's merged_count accumulates the constituent counts.
+    """
+    if gap_secs == 0.0 or not turns:
+        return turns
+
+    merged: list[Turn] = [Turn(
+        speaker_id=turns[0].speaker_id,
+        start=turns[0].start,
+        end=turns[0].end,
+        duration=turns[0].duration,
+        transcript=turns[0].transcript,
+        sentiment=turns[0].sentiment,
+        sentiment_score=turns[0].sentiment_score,
+        merged_count=turns[0].merged_count,
+    )]
+
+    for cur in turns[1:]:
+        prev = merged[-1]
+        gap = cur.start - prev.end
+        if cur.speaker_id == prev.speaker_id and gap <= gap_secs:
+            new_end = cur.end
+            new_duration = new_end - prev.start
+
+            if prev.sentiment_score is not None and cur.sentiment_score is not None:
+                new_score: Optional[float] = round(
+                    (prev.sentiment_score * prev.duration + cur.sentiment_score * cur.duration)
+                    / new_duration,
+                    4,
+                )
+            elif prev.sentiment_score is not None:
+                new_score = prev.sentiment_score
+            elif cur.sentiment_score is not None:
+                new_score = cur.sentiment_score
+            else:
+                new_score = None
+
+            if new_score is None:
+                new_sentiment: Optional[str] = None
+            elif new_score > 0.1:
+                new_sentiment = "positive"
+            elif new_score < -0.1:
+                new_sentiment = "negative"
+            else:
+                new_sentiment = "neutral"
+
+            left = (prev.transcript or "").strip()
+            right = (cur.transcript or "").strip()
+            new_transcript: Optional[str] = (
+                (left + " " + right).strip() if (left or right) else None
+            )
+
+            prev.end = new_end
+            prev.duration = round(new_duration, 3)
+            prev.transcript = new_transcript
+            prev.sentiment_score = new_score
+            prev.sentiment = new_sentiment
+            prev.merged_count += cur.merged_count
+        else:
+            merged.append(Turn(
+                speaker_id=cur.speaker_id,
+                start=cur.start,
+                end=cur.end,
+                duration=cur.duration,
+                transcript=cur.transcript,
+                sentiment=cur.sentiment,
+                sentiment_score=cur.sentiment_score,
+                merged_count=cur.merged_count,
+            ))
+
+    return merged
+
 
 # ======================================================================
 # Helper to aggregate per-speaker stats from the list of turns.

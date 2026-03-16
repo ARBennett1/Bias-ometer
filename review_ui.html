@@ -56,7 +56,8 @@
   .inline-form-actions { display: flex; gap: 6px; margin-top: 4px; }
   /* Right Panel */
   .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .transcript-header { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); flex-shrink: 0; display: flex; align-items: center; gap: 12px; }
+  .transcript-header { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); flex-shrink: 0; display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+  .transcript-header-text { flex: 1; }
   .transcript-list { overflow-y: auto; flex: 1; padding: 8px 16px; }
   .turn-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: var(--radius); margin-bottom: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background 0.1s; }
   .turn-row:hover { background: var(--surface); }
@@ -114,6 +115,25 @@
   .search-result-item { padding: 7px 10px; background: var(--bg); border-radius: 4px; cursor: pointer; font-size: 12px; margin-bottom: 4px; border: 1px solid var(--border); }
   .search-result-item:hover { border-color: var(--accent); }
   ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  /* Merge tuning panel */
+  .merge-panel { display: none; background: #1a1d27; border-bottom: 1px solid var(--border); padding: 10px 16px; flex-shrink: 0; }
+  .merge-panel.open { display: block; }
+  .merge-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .merge-row label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  #merge-slider { flex: 1; min-width: 120px; max-width: 220px; accent-color: var(--accent); cursor: pointer; }
+  #merge-num { width: 58px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px; font-size: 12px; }
+  .merge-counts { font-size: 12px; color: var(--muted); padding: 4px 0; }
+  .merge-counts strong { color: var(--text); }
+  .merge-counts .reduction { color: #22c55e; }
+  .merge-counts .increase { color: #ef4444; }
+  .merge-preview-banner { display: none; padding: 4px 10px; background: #6366f122; border: 1px solid #6366f144; border-radius: 4px; font-size: 11px; color: var(--accent); margin-bottom: 6px; }
+  .merge-preview-banner.visible { display: block; }
+  /* Sub-turn drawer */
+  .sub-turns { border-left: 2px solid var(--border); margin: 6px 0 2px 20px; padding: 4px 0 4px 10px; display: none; }
+  .sub-turns.open { display: block; }
+  .sub-turn-row { font-size: 11px; color: var(--muted); padding: 2px 0; line-height: 1.4; }
+  .sub-turn-row .sub-ts { font-family: monospace; color: var(--accent); margin-right: 6px; }
+  .sub-turn-row .sub-text { color: var(--text); }
 </style>
 </head>
 <body>
@@ -134,7 +154,25 @@
   </div>
   <div class="right-panel">
     <div class="transcript-header" id="transcript-header">
-      Select a session to begin
+      <span class="transcript-header-text" id="transcript-header-text">Select a session to begin</span>
+      <button class="btn btn-filter" id="merge-tune-btn" onclick="toggleMergePanel()" style="display:none;white-space:nowrap">⚙ Merge Tuning</button>
+    </div>
+    <div class="merge-panel" id="merge-panel">
+      <div class="merge-preview-banner" id="merge-preview-banner">
+        Preview mode — changes not saved. Use Apply to save.
+      </div>
+      <div class="merge-row">
+        <label>Gap threshold</label>
+        <input type="range" id="merge-slider" min="0" max="5" step="0.1" value="1.0" oninput="onMergeSlider(this.value)">
+        <input type="number" id="merge-num" min="0" max="10" step="0.1" value="1.0" oninput="onMergeInput(this.value)">
+        <span style="font-size:12px;color:var(--muted)" id="merge-gap-unit">s</span>
+        <button class="btn btn-merge" id="merge-compress-btn" onclick="toggleCompressMode()" title="Merge all consecutive turns by the same speaker, regardless of gap size" style="margin-left:6px">⇒ Compress</button>
+      </div>
+      <div class="merge-counts" id="merge-counts"></div>
+      <div class="merge-row" style="margin-top:4px">
+        <button class="btn" id="merge-preview-toggle-btn" onclick="toggleMergePreview()">Show preview</button>
+        <button class="btn btn-primary" onclick="applyRemerge()" style="margin-left:auto">Apply to session</button>
+      </div>
     </div>
     <div class="filter-bar" id="filter-bar">
       <span id="filter-label"></span>
@@ -319,13 +357,20 @@ function renderUI() {
   const allTurnsFlat = speakers.flatMap(s => s.turns);
   const totalOverrides = allTurnsFlat.filter(t => t.overridden && !t.deleted).length;
   const totalDeleted = allTurnsFlat.filter(t => t.deleted).length;
+  const totalMerged = allTurnsFlat.filter(t => !t.deleted && (t.merged_count || 1) > 1).length;
   const deletedPart = totalDeleted > 0 ? ` · ${totalDeleted} deleted` : '';
-  document.getElementById('transcript-header').textContent =
-    `${totalTurns} turns · ${session.num_speakers} speakers · ${totalOverrides} override${totalOverrides !== 1 ? 's' : ''}${deletedPart}`;
+  const mergedPart = totalMerged > 0 ? ` · ${totalMerged} merged` : '';
+  document.getElementById('transcript-header-text').textContent =
+    `${totalTurns} turns · ${session.num_speakers} speakers · ${totalOverrides} override${totalOverrides !== 1 ? 's' : ''}${deletedPart}${mergedPart}`;
 
   renderSpeakers(speakers, session);
   renderTranscript(speakers, all_ephemeral_ids, session);
   if (activeFilter) applyFilter(activeFilter);
+
+  // Show merge tuning button now that a session is loaded
+  document.getElementById('merge-tune-btn').style.display = 'inline-block';
+  // Re-sync merge panel if it's open
+  if (document.getElementById('merge-panel').classList.contains('open')) _initMergePanel();
 }
 
 function renderSpeakers(speakers, session) {
@@ -390,6 +435,45 @@ function renderSpeakers(speakers, session) {
   }).join('');
 }
 
+function _buildCompressedRuns(allTurns) {
+  // Group consecutive turns with the same original_speaker into compressed entries.
+  // Deleted turns always break a run (they are passed through unchanged).
+  const result = [];
+  let i = 0;
+  while (i < allTurns.length) {
+    const first = allTurns[i];
+    if (first.deleted) {
+      result.push({ ...first, _compressed: false, _runLen: 1 });
+      i++;
+      continue;
+    }
+    // Extend the run while speaker stays the same and turns are not deleted
+    let j = i + 1;
+    while (j < allTurns.length &&
+           !allTurns[j].deleted &&
+           allTurns[j].original_speaker === first.original_speaker) {
+      j++;
+    }
+    const run = allTurns.slice(i, j);
+    if (run.length === 1) {
+      result.push({ ...first, _compressed: false, _runLen: 1 });
+    } else {
+      const parts = run.map(t => (t.transcript || '').trim()).filter(Boolean);
+      const last = run[run.length - 1];
+      result.push({
+        ...first,
+        end: last.end,
+        duration: last.end - first.start,
+        transcript: parts.length > 0 ? parts.join('...') : null,
+        _compressed: true,
+        _runLen: run.length,
+      });
+    }
+    i = j;
+  }
+  return result;
+}
+
 function renderTranscript(speakers, allIds, session) {
   // Build flat sorted turn list with speaker info
   const allTurns = [];
@@ -400,8 +484,11 @@ function renderTranscript(speakers, allIds, session) {
   });
   allTurns.sort((a, b) => a.index - b.index);
 
+  // In compress mode, group consecutive same-speaker turns into single display rows
+  const displayTurns = _compressMode ? _buildCompressedRuns(allTurns) : allTurns;
+
   const container = document.getElementById('transcript-list');
-  container.innerHTML = allTurns.map(turn => {
+  container.innerHTML = displayTurns.map(turn => {
     const effColor = getSpeakerColor(turn.effective_speaker);
     const origColor = getSpeakerColor(turn.original_speaker);
     const effSp = speakerLookup[turn.effective_speaker];
@@ -411,9 +498,13 @@ function renderTranscript(speakers, allIds, session) {
     const sentClass = turn.sentiment === 'positive' ? 'sent-positive'
       : turn.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
 
+    const compressedSuffix = turn._compressed
+      ? ` <span style="font-size:11px;font-weight:400;color:var(--muted)">(Compressed: ${turn._runLen})</span>`
+      : '';
+
     const speakerLabel = turn.overridden
-      ? `<span class="orig">${origName}</span><strong style="color:${effColor}">${effName}</strong>`
-      : `<span style="color:${effColor}">${effName}</span>`;
+      ? `<span class="orig">${origName}</span><strong style="color:${effColor}">${effName}${compressedSuffix}</strong>`
+      : `<span style="color:${effColor}">${effName}${compressedSuffix}</span>`;
 
     const selectOptions = allIds.map(id => {
       const sp = speakerLookup[id];
@@ -431,14 +522,39 @@ function renderTranscript(speakers, allIds, session) {
             onchange="submitReassign(${turn.index}, this.value)"
             onkeydown="if(event.key==='Escape'){this.classList.remove('open');}">${selectOptions}</select>
         </div>
-        <button class="icon-btn" id="play-btn-${turn.index}" title="Play / Stop" onclick="togglePlayTurn(${turn.index})">▶</button>
+        <button class="icon-btn" id="play-btn-${turn.index}" title="Play / Stop" onclick="togglePlayTurn(${turn.index},${turn.start},${turn.end})">▶</button>
         <button class="icon-btn btn-frame" title="View frame (F)" onclick="viewTurnFrame(${turn.index})">📷</button>
         <button class="icon-btn btn-delete" title="Delete turn (D)" onclick="deleteTurn(${turn.index})">🗑</button>`;
+
+    const mergedCount = turn.merged_count || 1;
+    const mergedBadge = (!turn.deleted && mergedCount > 1)
+      ? `<span class="confidence-chip conf-low" style="cursor:pointer" onclick="toggleSubTurns(${turn.index})" title="Click to expand constituent turns">merged ${mergedCount} ▾</span>`
+      : '';
+
+    // Sub-turn drawer
+    const originalTurns = reviewData?.session?.original_turns || [];
+    let subTurnsHtml = '';
+    if (!turn.deleted && mergedCount > 1 && originalTurns.length > 0) {
+      const subs = originalTurns.filter(ot =>
+        ot.speaker_id === turn.original_speaker &&
+        ot.start >= turn.start - 0.01 &&
+        ot.end <= turn.end + 0.01
+      );
+      if (subs.length > 0) {
+        subTurnsHtml = `<div class="sub-turns" id="sub-turns-${turn.index}">` +
+          subs.map(st => {
+            const excerpt = (st.transcript || '').trim().slice(0, 80) + ((st.transcript || '').length > 80 ? '…' : '');
+            return `<div class="sub-turn-row"><span class="sub-ts">${fmtTime(st.start)}→${fmtTime(st.end)}</span><span class="sub-text">${excerpt || '<em style="color:#555">(silent)</em>'}</span></div>`;
+          }).join('') +
+          '</div>';
+      }
+    }
 
     const chipsHtml = turn.deleted
       ? `<span class="deleted-chip">DELETED</span>`
       : `<span class="sentiment-chip ${sentClass}">${turn.sentiment}</span>
-         ${turn.overridden ? `<span style="font-size:10px;color:var(--muted)">overridden${turn.override_notes ? ': ' + turn.override_notes : ''}</span>` : ''}`;
+         ${turn.overridden ? `<span style="font-size:10px;color:var(--muted)">overridden${turn.override_notes ? ': ' + turn.override_notes : ''}</span>` : ''}
+         ${mergedBadge}`;
 
     const turnFilterSpeaker = turn.deleted ? turn.original_speaker : turn.effective_speaker;
     return `
@@ -453,8 +569,11 @@ function renderTranscript(speakers, allIds, session) {
       <span class="speaker-dot" style="background:${effColor}"></span>
       <div class="turn-body">
         <div class="turn-speaker">${speakerLabel}</div>
-        <div class="turn-transcript">${turn.transcript || '<em style="color:var(--muted)">(no transcript)</em>'}</div>
+        <div class="turn-transcript">${(turn.transcript != null && turn.transcript !== '')
+          ? turn.transcript
+          : '<em style="color:var(--muted)">(no transcript)</em>'}</div>
         <div class="turn-chips">${chipsHtml}</div>
+        ${subTurnsHtml}
       </div>
       <div class="turn-actions">
         ${actionButtons}
@@ -545,6 +664,194 @@ function clearFilter() {
     btn.textContent = '⊙ Filter';
   });
   document.getElementById('filter-bar').classList.remove('visible');
+}
+
+// ── Merge tuning ───────────────────────────────────────────────────────────────
+let _mergePreviewActive = false;
+let _mergeDebounceTimer = null;
+let _previewTurns = null;   // null = not in preview, [] = preview turns
+let _compressMode = false;
+const COMPRESS_GAP = 9999;
+
+function toggleMergePanel() {
+  const panel = document.getElementById('merge-panel');
+  const btn = document.getElementById('merge-tune-btn');
+  const isOpen = panel.classList.toggle('open');
+  btn.classList.toggle('active', isOpen);
+  if (isOpen) _initMergePanel();
+}
+
+function _initMergePanel() {
+  if (!reviewData) return;
+  const gap = reviewData.session.merge_gap_secs ?? 1.0;
+  _compressMode = false;
+  _syncCompressModeUI();
+  document.getElementById('merge-slider').value = Math.min(gap, 5);
+  document.getElementById('merge-num').value = gap;
+  _refreshMergeCounts(gap);
+}
+
+function toggleCompressMode() {
+  _compressMode = !_compressMode;
+  _syncCompressModeUI();
+  // Re-render transcript immediately using client-side grouping
+  if (reviewData) renderTranscript(reviewData.speakers, reviewData.all_ephemeral_ids, reviewData.session);
+  // Update counts via API
+  _scheduleMergePreview(_compressMode ? COMPRESS_GAP : (parseFloat(document.getElementById('merge-num').value) || 0));
+}
+
+function _syncCompressModeUI() {
+  const slider = document.getElementById('merge-slider');
+  const numInput = document.getElementById('merge-num');
+  const unit = document.getElementById('merge-gap-unit');
+  const btn = document.getElementById('merge-compress-btn');
+  slider.disabled = _compressMode;
+  numInput.disabled = _compressMode;
+  slider.style.opacity = _compressMode ? '0.35' : '1';
+  numInput.style.opacity = _compressMode ? '0.35' : '1';
+  unit.style.opacity = _compressMode ? '0.35' : '1';
+  btn.classList.toggle('active', _compressMode);
+  btn.textContent = _compressMode ? '⇒ Compress (on)' : '⇒ Compress';
+}
+
+function _effectiveGap() {
+  return _compressMode ? COMPRESS_GAP : (parseFloat(document.getElementById('merge-num').value) || 0);
+}
+
+function onMergeSlider(val) {
+  if (_compressMode) return;
+  document.getElementById('merge-num').value = val;
+  _scheduleMergePreview(parseFloat(val));
+}
+
+function onMergeInput(val) {
+  if (_compressMode) return;
+  const v = Math.max(0, Math.min(10, parseFloat(val) || 0));
+  document.getElementById('merge-slider').value = Math.min(5, v);
+  _scheduleMergePreview(v);
+}
+
+function _scheduleMergePreview(gap) {
+  clearTimeout(_mergeDebounceTimer);
+  _mergeDebounceTimer = setTimeout(() => _fetchMergePreview(gap), 280);
+}
+
+async function _fetchMergePreview(gap) {
+  if (!currentSession) return;
+  try {
+    const fd = new FormData();
+    fd.append('merge_gap_secs', gap);
+    const res = await api('POST', `/review/${currentSession}/remerge`, fd);
+    _updateMergeCountsDisplay(res.original_count, res.merged_count, gap);
+    if (_mergePreviewActive) {
+      _previewTurns = res.turns;
+      _renderPreviewTranscript(res.turns);
+    }
+  } catch (e) {
+    document.getElementById('merge-counts').textContent = 'Preview failed: ' + e.message;
+  }
+}
+
+function _refreshMergeCounts(gap) {
+  if (!reviewData) return;
+  const origCount = (reviewData.session.original_turns || []).length;
+  const curCount = reviewData.speakers.reduce((a, s) => a + s.turns.length, 0);
+  const source = origCount || curCount;
+  _updateMergeCountsDisplay(source, curCount, gap);
+  _scheduleMergePreview(gap);
+}
+
+function _updateMergeCountsDisplay(origCount, mergedCount, gap) {
+  const el = document.getElementById('merge-counts');
+  const diff = origCount - mergedCount;
+  const pct = origCount ? Math.round((diff / origCount) * 100) : 0;
+  let diffHtml = '';
+  if (origCount > 0 && (gap > 0 || _compressMode)) {
+    const cls = diff > 0 ? 'reduction' : (diff < 0 ? 'increase' : '');
+    const sign = diff >= 0 ? '-' : '+';
+    diffHtml = ` <span class="${cls}">(${sign}${Math.abs(diff)}, ${pct}% reduction)</span>`;
+  }
+  const gapLabel = (_compressMode || gap >= COMPRESS_GAP) ? '∞ (compress)' : `${gap}s`;
+  el.innerHTML = `Original: <strong>${origCount}</strong> turns &rarr; Gap <strong>${gapLabel}</strong>: <strong>${mergedCount}</strong> turns${diffHtml}`;
+}
+
+function toggleMergePreview() {
+  _mergePreviewActive = !_mergePreviewActive;
+  const btn = document.getElementById('merge-preview-toggle-btn');
+  const banner = document.getElementById('merge-preview-banner');
+  if (_mergePreviewActive) {
+    btn.textContent = 'Hide preview';
+    btn.classList.add('active');
+    banner.classList.add('visible');
+    _fetchMergePreview(_effectiveGap());
+  } else {
+    btn.textContent = 'Show preview';
+    btn.classList.remove('active');
+    banner.classList.remove('visible');
+    _previewTurns = null;
+    // Restore actual transcript
+    if (reviewData) renderTranscript(reviewData.speakers, reviewData.all_ephemeral_ids, reviewData.session);
+  }
+}
+
+function _renderPreviewTranscript(previewTurnsList) {
+  if (!reviewData) return;
+  // Build a fake speakers structure from preview turns for rendering
+  const speakerLookup = {};
+  reviewData.speakers.forEach(s => { speakerLookup[s.ephemeral_id] = s; });
+  const allIds = reviewData.all_ephemeral_ids;
+
+  const container = document.getElementById('transcript-list');
+  container.innerHTML = previewTurnsList.map((turn, i) => {
+    const effColor = getSpeakerColor(turn.speaker_id);
+    const sp = speakerLookup[turn.speaker_id];
+    const name = sp?.display_name || turn.speaker_id;
+    const sentClass = turn.sentiment === 'positive' ? 'sent-positive'
+      : turn.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
+    const mergedBadge = (turn.merged_count || 1) > 1
+      ? `<span class="confidence-chip conf-low">merged ${turn.merged_count}</span>` : '';
+    return `
+    <div class="turn-row" style="border-left:3px solid ${effColor}22">
+      <span class="turn-ts">[${fmtTime(turn.start)} → ${fmtTime(turn.end)}]</span>
+      <span class="speaker-dot" style="background:${effColor}"></span>
+      <div class="turn-body">
+        <div class="turn-speaker"><span style="color:${effColor}">${name}</span></div>
+        <div class="turn-transcript">${turn.transcript || '<em style="color:var(--muted)">(no transcript)</em>'}</div>
+        <div class="turn-chips">
+          <span class="sentiment-chip ${sentClass}">${turn.sentiment || 'neutral'}</span>
+          ${mergedBadge}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function applyRemerge() {
+  const gap = _effectiveGap();
+  const origCount = (reviewData?.session?.original_turns || []).length;
+  const hasOverrides = reviewData?.speakers.some(s => s.turns.some(t => t.overridden || t.deleted));
+  const modeLabel = (_compressMode || gap >= COMPRESS_GAP) ? 'Compress (no gap limit)' : `merge gap ${gap}s`;
+  let msg = `Apply ${modeLabel} to this session?`;
+  if (hasOverrides) msg += '\n\nWARNING: This will clear all speaker reassignments and deletions you have made.';
+  if (!confirm(msg)) return;
+  try {
+    const fd = new FormData();
+    fd.append('merge_gap_secs', gap);
+    const res = await api('POST', `/review/${currentSession}/apply-remerge`, fd);
+    const modeLabel = (_compressMode || gap >= COMPRESS_GAP) ? 'compressed' : `gap ${gap}s`;
+    toast(`Applied (${modeLabel}): ${res.original_count} → ${res.merged_count} turns`);
+    // Exit preview + compress mode then reload
+    _mergePreviewActive = false;
+    _previewTurns = null;
+    _compressMode = false;
+    document.getElementById('merge-preview-toggle-btn').textContent = 'Show preview';
+    document.getElementById('merge-preview-toggle-btn').classList.remove('active');
+    document.getElementById('merge-preview-banner').classList.remove('visible');
+    _syncCompressModeUI();
+    await loadReview(currentSession);
+  } catch (e) {
+    toast('Apply failed: ' + e.message, 'error');
+  }
 }
 
 function toggleMerge(ephId) {
@@ -681,8 +988,8 @@ async function submitReassign(idx, assignedSpeaker) {
     // Update stats header
     const totalOverrides = reviewData.speakers.reduce((a, s) =>
       a + s.turns.filter(t => t.overridden).length, 0) + 1;
-    const header = document.getElementById('transcript-header');
-    header.textContent = header.textContent.replace(/\d+ override/, `${totalOverrides} override`);
+    const headerText = document.getElementById('transcript-header-text');
+    headerText.textContent = headerText.textContent.replace(/\d+ override/, `${totalOverrides} override`);
   } catch (e) {
     toast('Reassign failed: ' + e.message, 'error');
   }
@@ -803,7 +1110,7 @@ function _stopCurrentAudio() {
   currentlyPlayingIdx = null;
 }
 
-async function togglePlayTurn(idx) {
+async function togglePlayTurn(idx, startSec, endSec) {
   if (currentlyPlayingIdx === idx) {
     _stopCurrentAudio();
     return;
@@ -812,8 +1119,12 @@ async function togglePlayTurn(idx) {
   const audioEl = document.getElementById(`audio-${idx}`);
   const btn = document.getElementById(`play-btn-${idx}`);
   try {
-    const url = `/review/${currentSession}/audio/${idx}`;
-    if (!audioEl.src || !audioEl.src.endsWith(`/audio/${idx}`)) {
+    let url = `/review/${currentSession}/audio/${idx}`;
+    if (startSec !== undefined && endSec !== undefined) {
+      url += `?start=${startSec}&end=${endSec}`;
+    }
+    if (audioEl.dataset.audioUrl !== url) {
+      audioEl.dataset.audioUrl = url;
       audioEl.src = url;
       audioEl.load();
     }
@@ -828,6 +1139,16 @@ async function togglePlayTurn(idx) {
   } catch (e) {
     toast('Audio not available for this source', 'error');
   }
+}
+
+// ── Sub-turn drawer ────────────────────────────────────────────────────────────
+function toggleSubTurns(idx) {
+  const el = document.getElementById(`sub-turns-${idx}`);
+  if (!el) return;
+  const isOpen = el.classList.toggle('open');
+  // Update badge arrow
+  const badge = document.querySelector(`#turn-${idx} .confidence-chip`);
+  if (badge) badge.textContent = badge.textContent.replace(/[▾▴]/, isOpen ? '▴' : '▾');
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────
