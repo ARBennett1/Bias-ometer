@@ -856,7 +856,7 @@ function TranscriptView({ turns, linkedName }) {
 }
 
 // ─── SessionDetail ────────────────────────────────────────────────────────────
-function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
+function SessionDetail({ sessionId, onBack, onReview, speakers, onRefreshSpeakers }) {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('timeline')
@@ -955,6 +955,7 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
           )}
         </div>
         <button className="btn btn-ghost btn-sm" onClick={openMetaEdit}><Edit3 size={14} /> Edit info</button>
+        {onReview && <button className="btn btn-ghost btn-sm" onClick={() => onReview(sessionId)}><Eye size={14} /> Review</button>}
       </div>
 
       {editingMeta && (
@@ -1121,6 +1122,693 @@ function SessionDetail({ sessionId, onBack, speakers, onRefreshSpeakers }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── ReviewView ───────────────────────────────────────────────────────────────
+const REVIEW_PALETTE = [
+  '#6366f1','#22c55e','#f59e0b','#ec4899','#14b8a6',
+  '#f97316','#a78bfa','#34d399','#fb923c','#38bdf8',
+]
+const COMPRESS_GAP = 9999
+
+function ReviewView({ sessionId, onBack }) {
+  const [reviewData, setReviewData]     = useState(null)
+  const [loading, setLoading]           = useState(true)
+  const [toast, setToast]               = useState(null)
+  const [activeFilter, setActiveFilter] = useState(null)
+  const [playingIdx, setPlayingIdx]     = useState(null)
+  const audioEls                        = useRef({})
+  const [reassignOpen, setReassignOpen] = useState(null)
+  const [mergeExpandEph, setMergeExpandEph] = useState(null)
+  const [mergeTargetVal, setMergeTargetVal] = useState('')
+  const [subTurnsOpen, setSubTurnsOpen] = useState({})
+  const [compressMode, setCompressMode] = useState(false)
+  const [showMergePanel, setShowMergePanel] = useState(false)
+  const [mergeGap, setMergeGap]         = useState(1.0)
+  const [mergeCounts, setMergeCounts]   = useState(null)
+  const [mergePreviewActive, setMergePreviewActive] = useState(false)
+  const [previewTurns, setPreviewTurns] = useState(null)
+  const mergeDebounce                   = useRef(null)
+  const [confirmModal, setConfirmModal] = useState(null)
+  const [confirmForm, setConfirmForm]   = useState({ name: '', affiliation: '', role: '', notes: '' })
+  const [searchModal, setSearchModal]   = useState(null)
+  const [searchQuery, setSearchQuery]   = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [frameModal, setFrameModal]     = useState(null)
+  const [frameStatus, setFrameStatus]   = useState('loading')
+
+  function showToast(msg, type = 'success') {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 3000)
+  }
+
+  async function reload() {
+    try {
+      const data = await apiFetch(`/review/${sessionId}`)
+      setReviewData(data)
+    } catch (e) { showToast('Reload failed: ' + e.message, 'error') }
+  }
+
+  useEffect(() => {
+    apiFetch(`/review/${sessionId}`)
+      .then(d => { setReviewData(d); setLoading(false) })
+      .catch(e => { showToast('Failed to load: ' + e.message, 'error'); setLoading(false) })
+  }, [sessionId])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handle(e) {
+      if (frameModal) {
+        if (e.key === 'ArrowLeft')  { e.preventDefault(); doStepFrame(-1) }
+        if (e.key === 'ArrowRight') { e.preventDefault(); doStepFrame(1) }
+        if (e.key === 'Escape' || e.key === 'f' || e.key === 'F') setFrameModal(null)
+        return
+      }
+      if (e.key === 'Escape') { setReassignOpen(null); setConfirmModal(null); setSearchModal(null) }
+    }
+    window.addEventListener('keydown', handle)
+    return () => window.removeEventListener('keydown', handle)
+  }, [frameModal]) // eslint-disable-line
+
+  function spkColor(ephId, allIds) {
+    const idx = (allIds || []).indexOf(ephId)
+    return REVIEW_PALETTE[Math.max(0, idx) % REVIEW_PALETTE.length]
+  }
+
+  function fmtRev(s) {
+    const m = Math.floor(s / 60), sec = Math.floor(s % 60)
+    return `${m}:${String(sec).padStart(2, '0')}`
+  }
+
+  function buildCompressedRuns(allTurns) {
+    const result = []
+    let i = 0
+    while (i < allTurns.length) {
+      const first = allTurns[i]
+      if (first.deleted) { result.push({ ...first, _runLen: 1 }); i++; continue }
+      let j = i + 1
+      while (j < allTurns.length && !allTurns[j].deleted && allTurns[j].original_speaker === first.original_speaker) j++
+      const run = allTurns.slice(i, j)
+      if (run.length === 1) {
+        result.push({ ...first, _runLen: 1 })
+      } else {
+        const parts = run.map(t => (t.transcript || '').trim()).filter(Boolean)
+        const last = run[run.length - 1]
+        result.push({ ...first, end: last.end, duration: last.end - first.start, transcript: parts.join('...') || null, _compressed: true, _runLen: run.length })
+      }
+      i = j
+    }
+    return result
+  }
+
+  function scrollToSpeaker(ephId) {
+    if (!reviewData) return
+    const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId)
+    if (!sp || sp.turns.length === 0) return
+    const firstIdx = sp.turns.reduce((a, b) => a.index < b.index ? a : b).index
+    const el = document.getElementById(`rv-turn-${firstIdx}`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
+  function stopAudio() {
+    if (playingIdx === null) return
+    const el = audioEls.current[playingIdx]
+    if (el) { el.pause(); el.currentTime = 0 }
+    setPlayingIdx(null)
+  }
+
+  async function togglePlay(idx, start, end) {
+    if (playingIdx === idx) { stopAudio(); return }
+    stopAudio()
+    try {
+      const url = `/api/review/${sessionId}/audio/${idx}?start=${start}&end=${end}`
+      let el = audioEls.current[idx]
+      if (!el) { el = new Audio(); audioEls.current[idx] = el }
+      if (el.dataset.src !== url) { el.src = url; el.dataset.src = url; el.load() }
+      el.currentTime = 0
+      el.onended = () => setPlayingIdx(null)
+      await el.play()
+      setPlayingIdx(idx)
+    } catch { showToast('Audio not available for this source', 'error') }
+  }
+
+  async function submitReassign(idx, newSpeaker) {
+    setReassignOpen(null)
+    try {
+      const fd = new FormData()
+      fd.append('assigned_speaker', newSpeaker)
+      await apiFetch(`/review/${sessionId}/turns/${idx}/assign`, { method: 'POST', body: fd })
+      showToast(`Turn ${idx} reassigned to ${newSpeaker}`)
+      await reload()
+    } catch (e) { showToast('Reassign failed: ' + e.message, 'error') }
+  }
+
+  async function deleteTurn(idx) {
+    try {
+      await apiFetch(`/review/${sessionId}/turns/${idx}`, { method: 'DELETE' })
+      showToast(`Turn ${idx} deleted`)
+      await reload()
+    } catch (e) { showToast('Delete failed: ' + e.message, 'error') }
+  }
+
+  async function restoreTurn(idx) {
+    try {
+      await apiFetch(`/review/${sessionId}/turns/${idx}/restore`, { method: 'POST' })
+      showToast(`Turn ${idx} restored`)
+      await reload()
+    } catch (e) { showToast('Restore failed: ' + e.message, 'error') }
+  }
+
+  async function submitSpeakerMerge(ephId) {
+    if (!mergeTargetVal) return
+    try {
+      const fd = new FormData()
+      fd.append('target_speaker', mergeTargetVal)
+      const res = await apiFetch(`/review/${sessionId}/speakers/${ephId}/merge`, { method: 'POST', body: fd })
+      showToast(`Merged ${res.merged_turns} turns: ${ephId} → ${mergeTargetVal}`)
+      setMergeExpandEph(null)
+      await reload()
+    } catch (e) { showToast('Merge failed: ' + e.message, 'error') }
+  }
+
+  function openConfirm(ephId) {
+    const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId)
+    setConfirmForm({
+      name: sp?.display_name || sp?.suggested_name || '',
+      affiliation: sp?.affiliation || sp?.suggested_org || '',
+      role: sp?.role || sp?.suggested_title || '',
+      notes: '',
+    })
+    setConfirmModal({ ephId, sp })
+  }
+
+  async function submitConfirm() {
+    const { ephId, sp } = confirmModal
+    setConfirmModal(null)
+    try {
+      let catalogueId = sp?.catalogue_id
+      const fd = new FormData()
+      if (confirmForm.name)        fd.append('name', confirmForm.name)
+      if (confirmForm.affiliation) fd.append('affiliation', confirmForm.affiliation)
+      if (confirmForm.role)        fd.append('role', confirmForm.role)
+      if (confirmForm.notes)       fd.append('notes', confirmForm.notes)
+      if (!catalogueId) {
+        const res = await apiFetch('/speakers', { method: 'POST', body: fd })
+        catalogueId = res.catalogue_id
+      } else {
+        await apiFetch(`/speakers/${catalogueId}`, { method: 'PUT', body: fd })
+      }
+      const lfd = new FormData()
+      lfd.append('session_id', sessionId)
+      lfd.append('ephemeral_id', ephId)
+      lfd.append('catalogue_id', catalogueId)
+      await apiFetch('/link', { method: 'POST', body: lfd })
+      showToast(`Speaker confirmed: ${confirmForm.name || ephId}`)
+      await reload()
+    } catch (e) { showToast('Error confirming speaker: ' + e.message, 'error') }
+  }
+
+  function openSearch(ephId) {
+    setSearchModal({ ephId })
+    setSearchQuery('')
+    setSearchResults([])
+  }
+
+  async function doSearch(q) {
+    setSearchQuery(q)
+    if (!q.trim()) { setSearchResults([]); return }
+    try {
+      const results = await apiFetch(`/speakers?search=${encodeURIComponent(q)}`)
+      setSearchResults(results.slice(0, 10))
+    } catch {}
+  }
+
+  async function selectAndLink(catalogueId) {
+    const ephId = searchModal.ephId
+    setSearchModal(null)
+    try {
+      const fd = new FormData()
+      fd.append('session_id', sessionId)
+      fd.append('ephemeral_id', ephId)
+      fd.append('catalogue_id', catalogueId)
+      await apiFetch('/link', { method: 'POST', body: fd })
+      showToast(`Linked ${ephId} → ${catalogueId}`)
+      await reload()
+    } catch (e) { showToast('Link error: ' + e.message, 'error') }
+  }
+
+  function doStepFrame(delta) {
+    if (!reviewData) return
+    const allSorted = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index)
+    setFrameModal(prev => {
+      if (!prev) return null
+      const pos = allSorted.findIndex(t => t.index === prev.idx)
+      const next = allSorted[pos + delta]
+      if (!next) return prev
+      setFrameStatus('loading')
+      return { idx: next.index }
+    })
+  }
+
+  async function fetchMergePreview(gap) {
+    try {
+      const fd = new FormData()
+      fd.append('merge_gap_secs', gap)
+      const res = await apiFetch(`/review/${sessionId}/remerge`, { method: 'POST', body: fd })
+      setMergeCounts({ original: res.original_count, merged: res.merged_count })
+      if (mergePreviewActive) setPreviewTurns(res.turns)
+    } catch {}
+  }
+
+  function scheduleMergePreview(gap) {
+    clearTimeout(mergeDebounce.current)
+    mergeDebounce.current = setTimeout(() => fetchMergePreview(gap), 280)
+  }
+
+  useEffect(() => {
+    if (showMergePanel && reviewData) {
+      const gap = reviewData.session.merge_gap_secs ?? 1.0
+      setMergeGap(gap)
+      scheduleMergePreview(gap)
+    }
+  }, [showMergePanel]) // eslint-disable-line
+
+  async function applyRemerge() {
+    const gap = compressMode ? COMPRESS_GAP : mergeGap
+    const hasOverrides = reviewData?.speakers.some(s => s.turns.some(t => t.overridden || t.deleted))
+    let msg = `Apply merge gap ${gap >= COMPRESS_GAP ? '∞ (compress)' : gap + 's'} to this session?`
+    if (hasOverrides) msg += '\n\nWARNING: This will clear all speaker reassignments and deletions.'
+    if (!confirm(msg)) return
+    try {
+      const fd = new FormData()
+      fd.append('merge_gap_secs', gap)
+      const res = await apiFetch(`/review/${sessionId}/apply-remerge`, { method: 'POST', body: fd })
+      showToast(`Applied: ${res.original_count} → ${res.merged_count} turns`)
+      setMergePreviewActive(false)
+      setPreviewTurns(null)
+      setCompressMode(false)
+      await reload()
+    } catch (e) { showToast('Apply failed: ' + e.message, 'error') }
+  }
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Loader2 size={20} className="spin" /></div>
+  if (!reviewData) return <div className="notice notice-error"><AlertCircle size={16} /> Failed to load review data.</div>
+
+  const { session, speakers, all_ephemeral_ids } = reviewData
+  const speakerLookup = Object.fromEntries(speakers.map(s => [s.ephemeral_id, s]))
+  const allTurns = speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index)
+  const displayTurns = compressMode ? buildCompressedRuns(allTurns) : allTurns
+  const filteredTurns = activeFilter
+    ? displayTurns.filter(t => (t.deleted ? t.original_speaker : t.effective_speaker) === activeFilter)
+    : displayTurns
+  const shownTurns = previewTurns || filteredTurns
+  const totalTurns = speakers.reduce((a, s) => a + s.turn_count, 0)
+  const totalOverrides = allTurns.filter(t => t.overridden && !t.deleted).length
+  const totalDeleted   = allTurns.filter(t => t.deleted).length
+
+  return (
+    <div style={{ display: 'flex', height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 9999,
+          background: toast.type === 'error' ? '#2a1010' : '#0d2a1a',
+          border: `1px solid ${toast.type === 'error' ? '#5a2020' : '#1a4020'}`,
+          color: toast.type === 'error' ? '#f08080' : '#60d090',
+          padding: '10px 16px', borderRadius: 8, fontSize: 13, boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+        }}>{toast.msg}</div>
+      )}
+
+      {/* ── Left panel: speakers ── */}
+      <div style={{ width: 290, minWidth: 290, background: 'var(--surf)', borderRight: '1px solid var(--bord)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--bord)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <button className="btn btn-ghost btn-sm" onClick={onBack}><ArrowLeft size={13} /></button>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {session.source_name || sessionId}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--dim)' }}>{fmtTime(session.total_duration)} · {session.num_speakers} speakers</div>
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" style={{ width: '100%', justifyContent: 'center', fontSize: 11, ...(showMergePanel ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+            onClick={() => setShowMergePanel(v => !v)}>
+            ⇒ Merge tuning
+          </button>
+        </div>
+
+        {/* Speaker cards */}
+        <div style={{ overflowY: 'auto', flex: 1, padding: 8 }}>
+          {speakers.map(sp => {
+            const color    = spkColor(sp.ephemeral_id, all_ephemeral_ids)
+            const pct      = ((sp.total_speaking_time / (session.total_duration || 1)) * 100).toFixed(1)
+            const initials = sp.ephemeral_id.replace('SPEAKER_', 'S')
+            const isFiltered = activeFilter === sp.ephemeral_id
+            return (
+              <div key={sp.ephemeral_id}
+                style={{ background: isFiltered ? 'var(--surf3)' : 'var(--surf2)', border: `1px solid ${isFiltered ? color + '66' : 'var(--bord)'}`, borderRadius: 8, padding: '10px 12px', marginBottom: 8, cursor: 'pointer' }}
+                onClick={() => scrollToSpeaker(sp.ephemeral_id)}
+              >
+                {/* Top row */}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 6 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: '50%', border: `2px solid ${color}`, overflow: 'hidden', flexShrink: 0, background: 'var(--surf3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color, fontWeight: 600 }}>
+                    {sp.frame_url
+                      ? <img src={sp.frame_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.target.style.display = 'none' }} />
+                      : initials
+                    }
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {sp.display_name || sp.ephemeral_id}
+                    </div>
+                    {(sp.affiliation || sp.role) && (
+                      <div style={{ fontSize: 11, color: 'var(--dim)' }}>{[sp.affiliation, sp.role].filter(Boolean).join(' · ')}</div>
+                    )}
+                    <div style={{ fontSize: 10, color: 'var(--dimmer)', fontFamily: 'var(--mono)' }}>{sp.ephemeral_id}</div>
+                    {sp.suggested_name && sp.confidence && (
+                      <span style={{ fontSize: 10, background: 'var(--surf)', border: '1px solid var(--bord2)', borderRadius: 4, padding: '1px 5px', color: sp.confidence === 'high' ? 'var(--pos)' : sp.confidence === 'medium' ? 'var(--warn)' : 'var(--dim)' }}>
+                        {sp.suggested_name} [{sp.confidence}]
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {/* Time bar */}
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ height: 4, background: 'var(--surf3)', borderRadius: 2, overflow: 'hidden', marginBottom: 3 }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 2 }} />
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--dim)' }}>{sp.total_speaking_time.toFixed(1)}s · {sp.turn_count} turns · {pct}%</div>
+                </div>
+                {/* Action buttons */}
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }} onClick={e => e.stopPropagation()}>
+                  <button className="btn btn-sm" style={{ fontSize: 11, padding: '3px 8px', background: '#0d2a1a', color: 'var(--pos)', border: '1px solid #1a4020' }}
+                    onClick={() => openConfirm(sp.ephemeral_id)}>✓ Confirm</button>
+                  <button className="btn btn-sm btn-danger" style={{ fontSize: 11, padding: '3px 8px' }}
+                    onClick={() => openSearch(sp.ephemeral_id)}>✗ Wrong</button>
+                  <button className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }}
+                    onClick={() => { setMergeExpandEph(v => v === sp.ephemeral_id ? null : sp.ephemeral_id); setMergeTargetVal('') }}>⇒ Merge</button>
+                  <button className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '3px 8px', ...(isFiltered ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+                    onClick={() => setActiveFilter(f => f === sp.ephemeral_id ? null : sp.ephemeral_id)}>⊙ {isFiltered ? 'Clear' : 'Filter'}</button>
+                </div>
+                {/* Merge inline form */}
+                {mergeExpandEph === sp.ephemeral_id && (
+                  <div style={{ marginTop: 8, padding: 8, background: 'var(--surf)', borderRadius: 6, border: '1px solid var(--bord)' }} onClick={e => e.stopPropagation()}>
+                    <div style={{ fontSize: 11, color: 'var(--dim)', marginBottom: 6 }}>Merge all turns of {sp.ephemeral_id} into:</div>
+                    <select style={{ width: '100%', background: 'var(--surf2)', color: 'var(--text)', border: '1px solid var(--bord2)', borderRadius: 4, padding: '4px 8px', fontSize: 12, marginBottom: 6 }}
+                      value={mergeTargetVal} onChange={e => setMergeTargetVal(e.target.value)}>
+                      <option value="">— select —</option>
+                      {speakers.filter(s => s.ephemeral_id !== sp.ephemeral_id).map(s => (
+                        <option key={s.ephemeral_id} value={s.ephemeral_id}>{s.display_name || s.ephemeral_id}</option>
+                      ))}
+                    </select>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => setMergeExpandEph(null)}>Cancel</button>
+                      <button className="btn btn-primary btn-sm" style={{ fontSize: 11 }} onClick={() => submitSpeakerMerge(sp.ephemeral_id)}>Merge</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ── Right panel: transcript ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* Transcript header */}
+        <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--bord)', background: 'var(--surf)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 12, color: 'var(--dim)', flex: 1 }}>
+            {totalTurns} turns · {session.num_speakers} speakers · {totalOverrides} override{totalOverrides !== 1 ? 's' : ''}
+            {totalDeleted > 0 && ` · ${totalDeleted} deleted`}
+            {activeFilter && (
+              <span style={{ color: 'var(--accent)', marginLeft: 8 }}>
+                Filtered: {speakerLookup[activeFilter]?.display_name || activeFilter} —{' '}
+                <button className="link-btn" style={{ fontSize: 12 }} onClick={() => setActiveFilter(null)}>clear</button>
+              </span>
+            )}
+            {previewTurns && <span style={{ color: 'var(--warn)', marginLeft: 8 }}>● Preview mode</span>}
+          </div>
+          <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, ...(compressMode ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+            onClick={() => setCompressMode(v => !v)}>
+            ⇒ {compressMode ? 'Compress (on)' : 'Compress'}
+          </button>
+        </div>
+
+        {/* Merge tuning panel */}
+        {showMergePanel && (
+          <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--bord)', background: 'var(--surf2)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: 'var(--dim)' }}>Merge gap:</span>
+              <input type="range" min="0" max="5" step="0.1" value={Math.min(mergeGap, 5)} disabled={compressMode}
+                style={{ width: 100, accentColor: 'var(--accent)', opacity: compressMode ? 0.35 : 1 }}
+                onChange={e => { const v = parseFloat(e.target.value); setMergeGap(v); scheduleMergePreview(v) }} />
+              <input type="number" min="0" max="10" step="0.1" value={mergeGap} disabled={compressMode}
+                style={{ width: 56, background: 'var(--surf)', color: 'var(--text)', border: '1px solid var(--bord2)', borderRadius: 4, padding: '3px 6px', fontSize: 12, opacity: compressMode ? 0.35 : 1 }}
+                onChange={e => { const v = Math.max(0, Math.min(10, parseFloat(e.target.value) || 0)); setMergeGap(v); scheduleMergePreview(v) }} />
+              <span style={{ fontSize: 11, color: 'var(--dim)', opacity: compressMode ? 0.35 : 1 }}>s</span>
+              <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, ...(compressMode ? { color: 'var(--accent)', borderColor: 'var(--accent)' } : {}) }}
+                onClick={() => { const next = !compressMode; setCompressMode(next); scheduleMergePreview(next ? COMPRESS_GAP : mergeGap) }}>
+                ⇒ {compressMode ? 'Compress (on)' : 'Compress'}
+              </button>
+              {mergeCounts && (
+                <span style={{ fontSize: 11, color: 'var(--dim)' }}>
+                  {mergeCounts.original} → <strong style={{ color: 'var(--text)' }}>{mergeCounts.merged}</strong>
+                  {mergeCounts.original > 0 && (
+                    <span style={{ color: mergeCounts.original > mergeCounts.merged ? 'var(--pos)' : 'var(--dim)', marginLeft: 4 }}>
+                      ({mergeCounts.original > mergeCounts.merged ? '-' : '+'}{Math.abs(mergeCounts.original - mergeCounts.merged)}, {Math.round(Math.abs(mergeCounts.original - mergeCounts.merged) / mergeCounts.original * 100)}% reduction)
+                    </span>
+                  )}
+                </span>
+              )}
+              <button className="btn btn-ghost btn-sm" style={{ fontSize: 11, ...(mergePreviewActive ? { color: 'var(--accent)' } : {}) }}
+                onClick={() => {
+                  const next = !mergePreviewActive
+                  setMergePreviewActive(next)
+                  if (next) fetchMergePreview(compressMode ? COMPRESS_GAP : mergeGap)
+                  else setPreviewTurns(null)
+                }}>
+                {mergePreviewActive ? 'Hide preview' : 'Show preview'}
+              </button>
+              <button className="btn btn-primary btn-sm" style={{ fontSize: 11 }} onClick={applyRemerge}>Apply</button>
+              <button className="btn btn-ghost btn-sm" style={{ fontSize: 11 }} onClick={() => setShowMergePanel(false)}>✕</button>
+            </div>
+          </div>
+        )}
+
+        {/* Turns list */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '6px 10px' }}>
+          {shownTurns.map((turn, i) => {
+            const isPreview  = !!previewTurns
+            const effId      = isPreview ? turn.speaker_id : turn.effective_speaker
+            const color      = spkColor(effId, all_ephemeral_ids)
+            const effSp      = speakerLookup[effId]
+            const effName    = effSp?.display_name || effId
+            const sentColor  = turn.sentiment === 'positive' ? 'var(--pos)' : turn.sentiment === 'negative' ? 'var(--neg)' : 'var(--dim)'
+            const mergedCount = turn.merged_count || 1
+            const isPlaying  = playingIdx === turn.index
+            const origTurns  = reviewData.session.original_turns || []
+
+            return (
+              <div key={isPreview ? i : turn.index}
+                id={isPreview ? undefined : `rv-turn-${turn.index}`}
+                tabIndex={isPreview ? undefined : 0}
+                onKeyDown={isPreview ? undefined : e => {
+                  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); setReassignOpen(v => v === turn.index ? null : turn.index) }
+                  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); deleteTurn(turn.index) }
+                  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); setFrameModal({ idx: turn.index }); setFrameStatus('loading') }
+                }}
+                style={{
+                  borderLeft: `3px solid ${turn.deleted ? 'var(--bord2)' : (turn.overridden && !isPreview ? color : color + '55')}`,
+                  padding: '7px 10px', borderRadius: '0 6px 6px 0', marginBottom: 4,
+                  background: 'var(--surf2)', opacity: turn.deleted ? 0.5 : 1,
+                  outline: 'none',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Turn meta */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--dimmer)' }}>
+                        [{fmtRev(turn.start)} → {fmtRev(turn.end)}]
+                      </span>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                      {!isPreview && turn.overridden
+                        ? <><span style={{ fontSize: 11, color: 'var(--dimmer)', textDecoration: 'line-through', fontFamily: 'var(--mono)' }}>{turn.original_speaker}</span>
+                            <strong style={{ fontSize: 12, color }}>{effName}</strong></>
+                        : <span style={{ fontSize: 12, color, fontWeight: 500 }}>{effName}</span>
+                      }
+                      {turn._compressed && <span style={{ fontSize: 10, color: 'var(--dimmer)' }}>(×{turn._runLen})</span>}
+                      {turn.deleted && <span style={{ fontSize: 10, background: '#2a1010', color: 'var(--neg)', padding: '1px 5px', borderRadius: 3 }}>DELETED</span>}
+                      {!turn.deleted && turn.sentiment && <span style={{ fontSize: 10, color: sentColor }}>{turn.sentiment}</span>}
+                      {!turn.deleted && !isPreview && mergedCount > 1 && (
+                        <button style={{ fontSize: 10, background: 'var(--surf)', border: '1px solid var(--bord2)', color: 'var(--dim)', borderRadius: 3, padding: '1px 5px', cursor: 'pointer' }}
+                          onClick={() => setSubTurnsOpen(o => ({ ...o, [turn.index]: !o[turn.index] }))}>
+                          merged {mergedCount} {subTurnsOpen[turn.index] ? '▴' : '▾'}
+                        </button>
+                      )}
+                      {!isPreview && turn.overridden && <span style={{ fontSize: 10, color: 'var(--dimmer)' }}>overridden</span>}
+                    </div>
+                    {/* Transcript */}
+                    <div style={{ fontSize: 13, color: turn.transcript ? 'var(--text)' : 'var(--dimmer)', fontStyle: turn.transcript ? 'normal' : 'italic', lineHeight: 1.5 }}>
+                      {turn.transcript || '(no transcript)'}
+                    </div>
+                    {/* Sub-turns drawer */}
+                    {!turn.deleted && !isPreview && mergedCount > 1 && subTurnsOpen[turn.index] && origTurns.length > 0 && (
+                      <div style={{ marginTop: 6, borderLeft: '2px solid var(--bord)', paddingLeft: 8 }}>
+                        {origTurns
+                          .filter(ot => ot.speaker_id === turn.original_speaker && ot.start >= turn.start - 0.01 && ot.end <= turn.end + 0.01)
+                          .map((st, si) => (
+                            <div key={si} style={{ fontSize: 11, color: 'var(--dim)', padding: '2px 0' }}>
+                              <span style={{ fontFamily: 'var(--mono)', color: 'var(--dimmer)', marginRight: 6 }}>{fmtRev(st.start)}→{fmtRev(st.end)}</span>
+                              {(st.transcript || '').slice(0, 80) || <em style={{ color: 'var(--dimmer)' }}>(silent)</em>}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* Turn actions */}
+                  {!isPreview && (
+                    <div style={{ display: 'flex', gap: 2, flexShrink: 0, alignItems: 'center', marginTop: 1 }}>
+                      {turn.deleted ? (
+                        <button title="Restore" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dim)', fontSize: 14, padding: '2px 5px' }}
+                          onClick={() => restoreTurn(turn.index)}>↩</button>
+                      ) : (
+                        <>
+                          <div style={{ position: 'relative' }}>
+                            <button title="Reassign (R)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: reassignOpen === turn.index ? 'var(--accent)' : 'var(--dim)', fontSize: 14, padding: '2px 5px' }}
+                              onClick={() => setReassignOpen(v => v === turn.index ? null : turn.index)}>↺</button>
+                            {reassignOpen === turn.index && (
+                              <select autoFocus
+                                style={{ position: 'absolute', right: 0, top: '100%', zIndex: 100, background: 'var(--surf)', border: '1px solid var(--bord2)', borderRadius: 6, fontSize: 12, color: 'var(--text)', padding: 4, minWidth: 180, boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}
+                                defaultValue={turn.effective_speaker}
+                                onChange={e => submitReassign(turn.index, e.target.value)}
+                                onBlur={() => setReassignOpen(null)}>
+                                {all_ephemeral_ids.map(id => (
+                                  <option key={id} value={id}>{speakerLookup[id]?.display_name || id}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                          <button title="Play/Stop" style={{ background: 'none', border: 'none', cursor: 'pointer', color: isPlaying ? 'var(--accent)' : 'var(--dim)', fontSize: 13, padding: '2px 5px' }}
+                            onClick={() => togglePlay(turn.index, turn.start, turn.end)}>
+                            {isPlaying ? '⏹' : '▶'}
+                          </button>
+                          <button title="View frame (F)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--dim)', fontSize: 13, padding: '2px 5px' }}
+                            onClick={() => { setFrameModal({ idx: turn.index }); setFrameStatus('loading') }}>📷</button>
+                          <button title="Delete (D)" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--neg)', fontSize: 13, padding: '2px 5px' }}
+                            onClick={() => deleteTurn(turn.index)}>🗑</button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ── Confirm speaker modal ── */}
+      {confirmModal && (
+        <div className="modal-overlay" onClick={() => setConfirmModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Confirm Speaker — <span style={{ color: 'var(--accent)', fontFamily: 'var(--mono)', fontSize: 14 }}>{confirmModal.ephId}</span></div>
+            {[['Name', 'name'], ['Affiliation', 'affiliation'], ['Role / title', 'role'], ['Notes', 'notes']].map(([label, key]) => (
+              <div key={key} className="form-group">
+                <label className="form-label">{label}</label>
+                <input className="form-input" autoFocus={key === 'name'} value={confirmForm[key]}
+                  onChange={e => setConfirmForm(f => ({ ...f, [key]: e.target.value }))} />
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setConfirmModal(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={submitConfirm}><CheckCircle2 size={14} /> Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Search / link modal ── */}
+      {searchModal && (
+        <div className="modal-overlay" onClick={() => setSearchModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">Find Existing Speaker</div>
+            <div className="form-group">
+              <label className="form-label">Search by name</label>
+              <input className="form-input" autoFocus placeholder="Type to search…" value={searchQuery}
+                onChange={e => doSearch(e.target.value)} />
+            </div>
+            <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+              {searchResults.map(r => (
+                <div key={r.catalogue_id}
+                  style={{ padding: '8px 10px', borderRadius: 6, cursor: 'pointer', marginBottom: 4, background: 'var(--surf2)', border: '1px solid var(--bord)' }}
+                  onClick={() => selectAndLink(r.catalogue_id)}>
+                  <strong style={{ fontSize: 13 }}>{r.display_name || r.catalogue_id}</strong>
+                  {r.affiliation && <span style={{ fontSize: 11, color: 'var(--dim)', marginLeft: 8 }}>{r.affiliation}</span>}
+                  <span style={{ fontSize: 10, color: 'var(--accent)', marginLeft: 8, fontFamily: 'var(--mono)' }}>{r.catalogue_id}</span>
+                </div>
+              ))}
+              {searchQuery && searchResults.length === 0 && (
+                <div style={{ color: 'var(--dim)', fontSize: 12, padding: 8 }}>No results found.</div>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+              <button className="btn btn-ghost" onClick={() => setSearchModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Frame viewer modal ── */}
+      {frameModal && (() => {
+        const allSorted = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index)
+        const pos  = allSorted.findIndex(t => t.index === frameModal.idx)
+        const turn = allSorted[pos]
+        return (
+          <div className="modal-overlay" onClick={() => setFrameModal(null)}>
+            <div style={{ background: 'var(--surf)', border: '1px solid var(--bord2)', borderRadius: 12, width: '90vw', maxWidth: 960, overflow: 'hidden' }}
+              onClick={e => e.stopPropagation()}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid var(--bord)' }}>
+                <span style={{ fontSize: 12, color: 'var(--dim)', fontFamily: 'var(--mono)' }}>
+                  Turn {frameModal.idx}{turn && ` · ${fmtRev(turn.start)} → ${fmtRev(turn.end)} · ${turn.original_speaker}`}
+                </span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--dimmer)' }}>← → to step · Esc to close</span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setFrameModal(null)}>✕</button>
+                </div>
+              </div>
+              <div style={{ position: 'relative', minHeight: 200, background: '#0a0d14', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {frameStatus === 'loading' && <div style={{ color: 'var(--dim)', fontSize: 13 }}>Loading frame…</div>}
+                {frameStatus === 'error' && (
+                  <div style={{ color: 'var(--neg)', fontSize: 13, textAlign: 'center', padding: 40 }}>
+                    No video frame available.<br /><span style={{ fontSize: 11, color: 'var(--dimmer)' }}>(Audio-only source or missing video file)</span>
+                  </div>
+                )}
+                <img key={frameModal.idx}
+                  src={`/api/review/${sessionId}/turns/${frameModal.idx}/frame?_=${Date.now()}`}
+                  alt="Turn frame"
+                  style={{ maxWidth: '100%', maxHeight: '72vh', objectFit: 'contain', display: frameStatus === 'loaded' ? 'block' : 'none' }}
+                  onLoad={() => setFrameStatus('loaded')}
+                  onError={() => setFrameStatus('error')} />
+              </div>
+              <div style={{ display: 'flex', gap: 8, padding: '8px 12px', borderTop: '1px solid var(--bord)' }}>
+                <button className="btn btn-ghost btn-sm" disabled={pos <= 0} onClick={() => doStepFrame(-1)}>← Prev</button>
+                <button className="btn btn-ghost btn-sm" disabled={pos >= allSorted.length - 1} onClick={() => doStepFrame(1)}>Next →</button>
+                <div style={{ flex: 1 }} />
+                {turn && !turn.deleted && (
+                  <button className="btn btn-primary btn-sm"
+                    onClick={() => { setFrameModal(null); setReassignOpen(turn.index) }}>↺ Reassign this turn</button>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -1557,6 +2245,11 @@ export default function App() {
     setView('session-detail')
   }
 
+  function handleReviewSession(sessionId) {
+    setSelectedSession(sessionId)
+    setView('session-review')
+  }
+
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: <BarChart2 size={15} /> },
     { id: 'new-job', label: 'New Job', icon: <Radio size={15} /> },
@@ -1565,7 +2258,7 @@ export default function App() {
     { id: 'speakers', label: 'Speakers', icon: <Users size={15} /> },
   ]
 
-  const titles = { dashboard: 'Dashboard', 'new-job': 'New Job', jobs: 'Jobs', sessions: 'Sessions', 'session-detail': 'Session Detail', speakers: 'Speakers' }
+  const titles = { dashboard: 'Dashboard', 'new-job': 'New Job', jobs: 'Jobs', sessions: 'Sessions', 'session-detail': 'Session Detail', 'session-review': 'Review', speakers: 'Speakers' }
 
   return (
     <>
@@ -1580,7 +2273,7 @@ export default function App() {
           <nav className="nav">
             <div className="nav-label">Navigation</div>
             {navItems.map(item => (
-              <button key={item.id} className={`nav-item ${view === item.id || (view === 'session-detail' && item.id === 'sessions') ? 'active' : ''}`}
+              <button key={item.id} className={`nav-item ${view === item.id || ((view === 'session-detail' || view === 'session-review') && item.id === 'sessions') ? 'active' : ''}`}
                 onClick={() => { setView(item.id); if (item.id !== 'session-detail') setSelectedSession(null) }}>
                 {item.icon}
                 <span style={{ flex: 1 }}>{item.label}</span>
@@ -1603,7 +2296,7 @@ export default function App() {
         <main className="main">
           <div className="topbar">
             <span style={{ fontFamily: 'var(--head)', fontWeight: 600, fontSize: 15 }}>{titles[view]}</span>
-            {view === 'session-detail' && selectedSession && (
+            {(view === 'session-detail' || view === 'session-review') && selectedSession && (
               <>
                 <span style={{ color: 'var(--dimmer)' }}>/</span>
                 <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--dim)' }}>{selectedSession}</span>
@@ -1611,7 +2304,7 @@ export default function App() {
             )}
           </div>
 
-          <div className="content">
+          <div className="content" style={view === 'session-review' ? { padding: 0 } : {}}>
             {view === 'dashboard' && <Dashboard onNavigate={navigate} />}
             {view === 'new-job' && <NewJobView onJobSubmitted={handleJobSubmitted} />}
             {view === 'jobs' && <JobsView onViewSession={handleViewSession} />}
@@ -1620,7 +2313,14 @@ export default function App() {
               <SessionDetail
                 sessionId={selectedSession}
                 onBack={() => setView('sessions')}
+                onReview={handleReviewSession}
                 onRefreshSpeakers={() => {}}
+              />
+            )}
+            {view === 'session-review' && selectedSession && (
+              <ReviewView
+                sessionId={selectedSession}
+                onBack={() => setView('session-detail')}
               />
             )}
             {view === 'speakers' && <SpeakersView />}
