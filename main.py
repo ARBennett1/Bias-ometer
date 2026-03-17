@@ -221,6 +221,7 @@ def cmd_process(args: argparse.Namespace) -> None:
     # ── Screen capture (MP4 only) ─────────────────────────────────────────
     if is_mp4 and not args.no_capture:
         from screen_capture import ScreenCapture, print_capture_summary, save_captures
+        from caption_ocr import CaptureMode
 
         sc = ScreenCapture(
             output_dir=out_dir,
@@ -233,6 +234,8 @@ def cmd_process(args: argparse.Namespace) -> None:
             video_source=str(input_path),
             result=result,
             session_id=session_id,
+            source_id=args.source_id,
+            capture_mode=CaptureMode(args.caption_mode),
         )
         print_capture_summary(captures)
         save_captures(captures, session_id, out_dir, source_url=str(input_path))
@@ -562,6 +565,22 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Disable Tesseract/pixel pre-screening; send all extracted frames to Vision")
     pr.add_argument("--merge-gap", type=float, default=1.0,
                     help="Maximum silence gap in seconds between turns of the same speaker to merge (0 to disable, default: 1.0)")
+    pr.add_argument(
+        "--caption-mode",
+        choices=["all_captions", "names_only"],
+        default="names_only",
+        help=(
+            "all_captions: capture any detected caption text (use to calibrate "
+            "source config). names_only: capture only frames where a PERSON name "
+            "is identified (production default)."
+        ),
+    )
+    pr.add_argument(
+        "--source-id",
+        default=None,
+        help="Source identifier for caption region config (e.g. 'bbc_politics_live'). "
+             "Falls back to 'default' if not specified or not found in registry.",
+    )
 
     # process-youtube ────────────────────────────────────────────────────────
     yt = sub.add_parser("process-youtube", help="Download and diarise a YouTube video")

@@ -100,6 +100,8 @@ class Job:
     vision_scan_window: float = 60.0
     vision_max_scan_frames: int = 20
     vision_text_prescreen: bool = True
+    source_id: Optional[str] = None
+    caption_mode: str = "names_only"  # "all_captions" | "names_only"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -662,7 +664,12 @@ def _youtube_worker(job_id: str, url: str) -> None:
         _update_job(job_id, status="error", error=str(exc), completed_at=_now())
 
 
-def _recapture_worker(session_id: str, force: bool) -> None:
+def _recapture_worker(
+    session_id: str,
+    force: bool,
+    source_id: Optional[str] = None,
+    caption_mode: str = "names_only",
+) -> None:
     """
     Background thread: run ScreenCapture against an existing session's
     stored source, merge results into captures.json, and update the
@@ -779,11 +786,14 @@ def _recapture_worker(session_id: str, force: bool) -> None:
             text_prescreen=text_pre,
         )
 
+        from caption_ocr import CaptureMode
         _set("running", 20, "Scanning frames…")
         new_captures = sc.capture_new_speakers(
             video_source=source_file,
             result=mock_result,
             session_id=session_id,
+            source_id=source_id,
+            capture_mode=CaptureMode(caption_mode),
         )
 
         # Merge new captures into the existing dict (new results win)
@@ -847,7 +857,15 @@ async def submit_job(
     vision_scan_window: float = Form(60.0),
     vision_max_scan_frames: int = Form(20),
     vision_text_prescreen: bool = Form(True),
+    source_id: Optional[str] = Form(None),
+    caption_mode: str = Form("names_only"),
 ):
+    _VALID_CAPTION_MODES = {"all_captions", "names_only"}
+    if caption_mode not in _VALID_CAPTION_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid caption_mode {caption_mode!r}. Valid values: {sorted(_VALID_CAPTION_MODES)}",
+        )
     _require_hf_token()
 
     if not url and not audio_file:
@@ -872,6 +890,8 @@ async def submit_job(
             vision_scan_window=vision_scan_window,
             vision_max_scan_frames=vision_max_scan_frames,
             vision_text_prescreen=vision_text_prescreen,
+            source_id=source_id,
+            caption_mode=caption_mode,
         )
         with _jobs_lock:
             _jobs[job_id] = job
@@ -905,6 +925,8 @@ async def submit_job(
             vision_scan_window=vision_scan_window,
             vision_max_scan_frames=vision_max_scan_frames,
             vision_text_prescreen=vision_text_prescreen,
+            source_id=source_id,
+            caption_mode=caption_mode,
         )
         with _jobs_lock:
             _jobs[job_id] = job
@@ -1633,19 +1655,30 @@ def get_turn_frame(session_id: str, turn_index: int):
 def recapture_session(
     session_id: str,
     force: bool = Query(False, description="Re-run Vision even for already-identified speakers"),
+    source_id: Optional[str] = Query(None, description="Source config ID for caption region (e.g. 'bbc_politics_live')"),
+    caption_mode: str = Query("names_only", description="'all_captions' or 'names_only'"),
 ):
     """
     Starts a background screen-capture pass against the session's stored
     source_file.  Returns immediately with status 'queued'.
     Poll GET /review/{session_id}/recapture/status for progress.
     """
+    _VALID_CAPTION_MODES = {"all_captions", "names_only"}
+    if caption_mode not in _VALID_CAPTION_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid caption_mode {caption_mode!r}. Valid values: {sorted(_VALID_CAPTION_MODES)}",
+        )
+
     with _recapture_lock:
         current = _recapture_jobs.get(session_id, {})
         if current.get("status") == "running":
             raise HTTPException(status_code=409, detail="Recapture already in progress for this session")
         _recapture_jobs[session_id] = {"status": "queued", "progress_pct": 0, "detail": "Queued…"}
 
-    threading.Thread(target=_recapture_worker, args=(session_id, force), daemon=True).start()
+    threading.Thread(
+        target=_recapture_worker, args=(session_id, force, source_id, caption_mode), daemon=True
+    ).start()
     return {"status": "queued", "session_id": session_id}
 
 

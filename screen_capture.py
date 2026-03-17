@@ -50,6 +50,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional, cast
 
+from sources import get_source_config, SourceConfig
+from caption_ocr import CaptureMode, caption_from_frame
+
+try:
+    import spacy as _spacy
+    _nlp = _spacy.load("en_core_web_sm")
+except (ImportError, OSError):
+    _nlp = None
+
 log = logging.getLogger(__name__)
 
 # ─── Scan parameters ─────────────────────────────────────────────────────────
@@ -216,6 +225,8 @@ class ScreenCapture:
         speaker_id: str,
         timestamp: float,
         session_id: str,
+        source_id: Optional[str] = None,
+        capture_mode: CaptureMode = CaptureMode.NAMES_ONLY,
     ) -> FrameResult:
         """
         Extract a frame at `timestamp` for one speaker and optionally
@@ -246,6 +257,8 @@ class ScreenCapture:
             turn_end=None,
             frame_dir=frame_dir,
             is_remote=is_remote,
+            source_id=source_id,
+            capture_mode=capture_mode,
         )
 
     def capture_new_speakers(
@@ -253,6 +266,8 @@ class ScreenCapture:
         video_source: str,
         result,           # diarizer.DiarizationResult
         session_id: str,
+        source_id: Optional[str] = None,
+        capture_mode: CaptureMode = CaptureMode.NAMES_ONLY,
     ) -> dict[str, FrameResult]:
         """
         Capture the first frame for every unique speaker in a
@@ -332,6 +347,8 @@ class ScreenCapture:
                         turn_end=turn_end,
                         frame_dir=self._frame_dir(session_id),
                         is_remote=is_remote,
+                        source_id=source_id,
+                        capture_mode=capture_mode,
                     )
                     if best_result is None:
                         best_result = result_candidate
@@ -429,6 +446,8 @@ class ScreenCapture:
         turn_end: Optional[float],
         frame_dir: Path,
         is_remote: bool,
+        source_id: Optional[str] = None,
+        capture_mode: CaptureMode = CaptureMode.NAMES_ONLY,
     ) -> FrameResult:
         """
         Two-pass text-aware scan across a speaker turn.
@@ -460,9 +479,13 @@ class ScreenCapture:
         # 3. Log scan plan
         log.info(f"  Scanning {len(timestamps)} frames for {speaker_id} ({turn_start:.1f}s – scan end)")
 
-        # 4. Extract and pre-screen all frames
+        # 4. Extract frames; run OCR tier (local) and edge-density prescreen (all)
         prescreened: list[tuple[float, Path, int, str]] = []  # (ts, path, char_count, method)
         first_extracted: Optional[tuple[float, Path]] = None
+        # OCR results: list of (ts, path, caption_result_dict)
+        ocr_results: list[tuple[float, Path, dict]] = []
+
+        source_cfg = get_source_config(source_id)
 
         for scan_ts in timestamps:
             temp_path = frame_dir / f"{speaker_id}_scan_{scan_ts:.2f}.png"
@@ -473,11 +496,69 @@ class ScreenCapture:
             if first_extracted is None:
                 first_extracted = (scan_ts, temp_path)
 
+            # --- Tier 1: OCR (local file sources only, bypassing old heuristic) ---
+            if not is_remote:
+                try:
+                    import numpy as np
+                    from PIL import Image as _PILImage
+                    _pil = _PILImage.open(temp_path).convert("RGB")
+                    frame_bgr = np.array(_pil)[:, :, ::-1]
+                    caption_result = caption_from_frame(
+                        frame_bgr, source_cfg, capture_mode, _nlp
+                    )
+                    if caption_result:
+                        log.info(
+                            f"  OCR tier: {caption_result['name']!r} at {scan_ts:.1f}s "
+                            f"lines={caption_result['raw_lines']}"
+                        )
+                        ocr_results.append((scan_ts, temp_path, caption_result))
+                except Exception as _ocr_err:
+                    log.debug(f"    OCR tier error at {scan_ts:.2f}s: {_ocr_err}")
+
+            # Edge-density prescreen for Vision fallback candidates
             passed, char_count, method = self._prescreen_frame(temp_path, is_remote)
             log.debug(f"    Prescreen {scan_ts:.2f}s: passed={passed} chars={char_count} method={method}")
 
             if passed:
                 prescreened.append((scan_ts, temp_path, char_count, method))
+
+        # --- If OCR found results, build a FrameResult and return (skip Vision) ---
+        if ocr_results:
+            best_ocr_ts, best_ocr_path, best_caption = ocr_results[0]
+            name = best_caption.get("name")
+            raw_lines = best_caption.get("raw_lines", [])
+            log.info(f"  OCR identified {speaker_id}: {name!r}  raw_lines={raw_lines}")
+
+            winning_path = frame_dir / f"{speaker_id}_{best_ocr_ts:.2f}.png"
+            if best_ocr_path.exists() and best_ocr_path != winning_path:
+                best_ocr_path.rename(winning_path)
+            elif best_ocr_path == winning_path:
+                pass  # already correct name
+            else:
+                winning_path = best_ocr_path  # rename failed or path gone
+
+            # Clean up all other scan frames
+            all_scan_paths = {p for _, p, _ in ocr_results} | {p for _, p, _, _ in prescreened}
+            for sp in all_scan_paths:
+                if sp != winning_path and sp.exists():
+                    sp.unlink(missing_ok=True)
+            for scan_ts in timestamps:
+                leftover = frame_dir / f"{speaker_id}_scan_{scan_ts:.2f}.png"
+                if leftover != winning_path and leftover.exists():
+                    leftover.unlink(missing_ok=True)
+
+            return FrameResult(
+                speaker_id=speaker_id,
+                timestamp=best_ocr_ts,
+                frame_path=winning_path if winning_path.exists() else best_ocr_path,
+                raw_text=" | ".join(raw_lines),
+                suggested_name=name,
+                suggested_title=None,
+                suggested_org=None,
+                confidence="high",
+                vision_used=False,
+                prescreen_method="ocr",
+            )
 
         # 5. Fallback if no frames passed prescreening
         if not prescreened and first_extracted is not None:
@@ -749,6 +830,7 @@ Rules:
                 suggested_org=org,
                 confidence=conf,
                 vision_used=True,
+                prescreen_method="vision",
             )
 
         except anthropic.APIError as e:
