@@ -3,1202 +3,2393 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bias-ometer Review</title>
+<title>Bias-ometer · Review</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Syne:wght@600;700&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
-    --text: #e2e8f0; --muted: #94a3b8; --accent: #6366f1;
-    --success: #22c55e; --warning: #f59e0b; --error: #ef4444;
-    --radius: 8px;
-  }
-  body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  header h1 { font-size: 16px; font-weight: 600; color: var(--accent); }
-  #session-select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px; font-size: 13px; cursor: pointer; }
-  #spinner { display: none; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; margin-left: auto; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .panels { display: flex; flex: 1; overflow: hidden; }
-  /* Left Panel */
-  .left-panel { width: 30%; min-width: 280px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
-  .panel-header { padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-  .panel-header strong { color: var(--text); font-size: 14px; display: block; margin-bottom: 2px; }
-  .speakers-list { overflow-y: auto; flex: 1; padding: 8px; }
-  .speaker-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s; }
-  .speaker-card:hover, .speaker-card.active { border-color: var(--accent); }
-  .speaker-card-top { display: flex; gap: 10px; align-items: flex-start; }
-  .speaker-thumb { width: 56px; height: 56px; border-radius: 6px; object-fit: cover; background: var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: var(--muted); overflow: hidden; }
-  .speaker-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
-  .speaker-info { flex: 1; min-width: 0; }
-  .speaker-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .speaker-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  .speaker-eph { font-size: 11px; color: var(--accent); margin-top: 1px; font-family: monospace; }
-  .confidence-chip { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; margin-top: 4px; }
-  .conf-high { background: #16a34a22; color: #22c55e; border: 1px solid #22c55e44; }
-  .conf-medium { background: #d97706222; color: #f59e0b; border: 1px solid #f59e0b44; }
-  .conf-low { background: #94a3b822; color: #94a3b8; border: 1px solid #94a3b844; }
-  .time-bar-wrap { margin-top: 8px; }
-  .time-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
-  .time-bar-fill { height: 100%; border-radius: 2px; }
-  .time-label { font-size: 10px; color: var(--muted); margin-top: 3px; }
-  .card-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
-  .btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 11px; cursor: pointer; transition: background 0.15s; white-space: nowrap; }
-  .btn:hover { background: var(--border); }
-  .btn-success { border-color: #22c55e44; color: #22c55e; }
-  .btn-danger { border-color: #ef444444; color: #ef4444; }
-  .btn-merge { border-color: #6366f144; color: #6366f1; }
-  .inline-form { margin-top: 10px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); display: none; }
-  .inline-form.open { display: block; }
-  .inline-form input, .inline-form select, .inline-form textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-size: 12px; margin-bottom: 6px; }
-  .inline-form label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 2px; }
-  .inline-form-actions { display: flex; gap: 6px; margin-top: 4px; }
-  /* Right Panel */
-  .right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .transcript-header { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); flex-shrink: 0; display: flex; align-items: center; gap: 12px; justify-content: space-between; }
-  .transcript-header-text { flex: 1; }
-  .transcript-list { overflow-y: auto; flex: 1; padding: 8px 16px; }
-  .turn-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: var(--radius); margin-bottom: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background 0.1s; }
-  .turn-row:hover { background: var(--surface); }
-  .turn-row.overridden { border-left-color: var(--accent); }
-  .turn-row.focused { background: var(--surface); outline: 1px solid var(--accent); }
-  .turn-ts { font-size: 11px; color: var(--muted); white-space: nowrap; font-family: monospace; flex-shrink: 0; padding-top: 2px; }
-  .speaker-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
-  .turn-body { flex: 1; min-width: 0; }
-  .turn-speaker { font-size: 12px; font-weight: 500; margin-bottom: 3px; }
-  .turn-speaker .orig { text-decoration: line-through; color: var(--muted); margin-right: 6px; }
-  .turn-transcript { font-size: 13px; color: var(--text); line-height: 1.5; }
-  .turn-chips { display: flex; gap: 6px; margin-top: 5px; flex-wrap: wrap; align-items: center; }
-  .sentiment-chip { padding: 1px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; }
-  .sent-positive { background: #16a34a22; color: #22c55e; }
-  .sent-neutral { background: #94a3b822; color: #94a3b8; }
-  .sent-negative { background: #ef444422; color: #ef4444; }
-  .turn-actions { display: flex; gap: 4px; flex-shrink: 0; }
-  .icon-btn { width: 26px; height: 26px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: color 0.15s; }
-  .icon-btn:hover { color: var(--text); border-color: var(--accent); }
-  .reassign-wrap { position: relative; }
-  .reassign-select { background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px; font-size: 11px; display: none; }
-  .reassign-select.open { display: inline-block; }
-  audio { display: none; }
-  .turn-row.deleted { opacity: 0.4; }
-  .turn-row.deleted .turn-transcript { text-decoration: line-through; color: var(--muted); }
-  .turn-row.deleted:hover { opacity: 0.65; }
-  .deleted-chip { padding: 1px 7px; border-radius: 20px; font-size: 10px; font-weight: 600; background: #ef444422; color: #ef4444; border: 1px solid #ef444444; }
-  .icon-btn.btn-delete:hover { color: #ef4444; border-color: #ef444466; }
-  .icon-btn.btn-restore:hover { color: #22c55e; border-color: #22c55e66; }
-  .turn-row.filtered-out { display: none; }
-  .speaker-card.filter-active { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .btn-filter { border-color: #6366f133; color: var(--muted); }
-  .btn-filter.active { background: #6366f122; border-color: var(--accent); color: var(--accent); }
-  .filter-bar { display: none; align-items: center; gap: 8px; padding: 6px 16px; background: #6366f111; border-bottom: 1px solid #6366f133; font-size: 12px; color: var(--accent); flex-shrink: 0; }
-  .filter-bar.visible { display: flex; }
-  .filter-bar button { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0 4px; line-height: 1; }
-  .filter-bar button:hover { color: var(--text); }
-  /* Toast */
-  #toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
-  .toast { padding: 10px 16px; border-radius: var(--radius); font-size: 13px; min-width: 200px; max-width: 350px; animation: fadeIn 0.2s; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
-  .toast-success { background: #16a34a; color: white; }
-  .toast-warn { background: #d97706; color: white; }
-  .toast-error { background: #dc2626; color: white; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-  /* Modal */
-  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 999; }
-  .modal-overlay.open { display: flex; }
-  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 400px; max-width: 90vw; }
-  .modal h3 { font-size: 15px; margin-bottom: 16px; }
-  .modal input, .modal select { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 7px 10px; font-size: 13px; margin-bottom: 10px; }
-  .modal label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
-  .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
-  .btn-primary:hover { background: #4f46e5; }
-  .search-results { margin-bottom: 10px; max-height: 200px; overflow-y: auto; }
-  .search-result-item { padding: 7px 10px; background: var(--bg); border-radius: 4px; cursor: pointer; font-size: 12px; margin-bottom: 4px; border: 1px solid var(--border); }
-  .search-result-item:hover { border-color: var(--accent); }
-  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  /* Merge tuning panel */
-  .merge-panel { display: none; background: #1a1d27; border-bottom: 1px solid var(--border); padding: 10px 16px; flex-shrink: 0; }
-  .merge-panel.open { display: block; }
-  .merge-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
-  .merge-row label { font-size: 12px; color: var(--muted); white-space: nowrap; }
-  #merge-slider { flex: 1; min-width: 120px; max-width: 220px; accent-color: var(--accent); cursor: pointer; }
-  #merge-num { width: 58px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 7px; font-size: 12px; }
-  .merge-counts { font-size: 12px; color: var(--muted); padding: 4px 0; }
-  .merge-counts strong { color: var(--text); }
-  .merge-counts .reduction { color: #22c55e; }
-  .merge-counts .increase { color: #ef4444; }
-  .merge-preview-banner { display: none; padding: 4px 10px; background: #6366f122; border: 1px solid #6366f144; border-radius: 4px; font-size: 11px; color: var(--accent); margin-bottom: 6px; }
-  .merge-preview-banner.visible { display: block; }
-  /* Sub-turn drawer */
-  .sub-turns { border-left: 2px solid var(--border); margin: 6px 0 2px 20px; padding: 4px 0 4px 10px; display: none; }
-  .sub-turns.open { display: block; }
-  .sub-turn-row { font-size: 11px; color: var(--muted); padding: 2px 0; line-height: 1.4; }
-  .sub-turn-row .sub-ts { font-family: monospace; color: var(--accent); margin-right: 6px; }
-  .sub-turn-row .sub-text { color: var(--text); }
-  /* NER hints */
-  .ner-hints { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
-  .ner-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-right: 2px; }
-  .ner-hint-btn { padding: 2px 8px; border-radius: 20px; border: 1px solid #6366f144; background: #6366f111; color: #a5b4fc; font-size: 10px; cursor: pointer; transition: background 0.15s, border-color 0.15s; white-space: nowrap; }
-  .ner-hint-btn:hover { background: #6366f133; border-color: var(--accent); color: var(--text); }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #07090f;
+  --surf:    #0c0f1a;
+  --surf2:   #111526;
+  --surf3:   #171c30;
+  --bord:    #1b2136;
+  --bord2:   #232c47;
+  --text:    #c6d4f0;
+  --dim:     #4f607d;
+  --accent:  #00cfaa;
+  --blue:    #4d8bfa;
+  --amber:   #f5a623;
+  --green:   #22d07a;
+  --red:     #f03060;
+  --purple:  #a78bfa;
+  --radius:  6px;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  height: 52px;
+  background: var(--surf);
+  border-bottom: 1px solid var(--bord);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
+.logo {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--accent);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+#session-select {
+  background: var(--surf2);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  min-width: 220px;
+  cursor: pointer;
+  outline: none;
+}
+#session-select:focus { border-color: var(--accent); }
+
+/* Spinner */
+.spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--bord);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+  display: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#hdr-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.stat-chip {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.stat-chip strong { color: var(--text); font-weight: 600; }
+
+#merge-tuning-btn {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--dim);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+#merge-tuning-btn:hover { color: var(--text); border-color: var(--accent); }
+
+/* ── Main layout ── */
+.panels {
+  display: flex;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+}
+
+/* ── Left Panel ── */
+.left-panel {
+  width: 270px;
+  flex-shrink: 0;
+  background: var(--surf);
+  border-right: 1px solid var(--bord);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.left-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--bord);
+  flex-shrink: 0;
+}
+
+.left-header h2 {
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+}
+
+.vis-btn {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--dim);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.vis-btn:hover { color: var(--text); }
+
+#speakers-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── Speaker Cards ── */
+.speaker-card {
+  background: var(--surf2);
+  border: 1px solid var(--bord);
+  border-radius: var(--radius);
+  padding: 10px;
+  transition: opacity 0.2s;
+}
+.speaker-card.sp-hidden-card { opacity: 0.5; }
+
+.sp-card-top {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.sp-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.sp-thumb-initials {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  opacity: 0.85;
+}
+
+.sp-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.sp-name {
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.sp-eph {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--dim);
+  word-break: break-all;
+}
+
+.sp-affil {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 2px;
+}
+
+.sp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.chip {
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  display: inline-block;
+}
+.chip-hi  { background: rgba(34,208,122,0.15); color: var(--green);  border: 1px solid rgba(34,208,122,0.3); }
+.chip-med { background: rgba(245,166,35,0.15);  color: var(--amber);  border: 1px solid rgba(245,166,35,0.3); }
+.chip-low { background: rgba(79,96,125,0.15);   color: var(--dim);    border: 1px solid rgba(79,96,125,0.3); }
+.chip-ghost  { background: rgba(245,166,35,0.12); color: var(--amber);  border: 1px solid rgba(245,166,35,0.25); }
+.chip-eph    { background: var(--surf3); color: var(--dim); border: 1px solid var(--bord2); font-family: 'IBM Plex Mono', monospace; }
+.chip-ovr    { background: rgba(0,207,170,0.12);  color: var(--accent); border: 1px solid rgba(0,207,170,0.25); }
+.chip-merged { background: rgba(77,139,250,0.12); color: var(--blue);   border: 1px solid rgba(77,139,250,0.25); }
+.chip-sent-pos { background: rgba(34,208,122,0.1);  color: var(--green); border: 1px solid rgba(34,208,122,0.2); }
+.chip-sent-neg { background: rgba(240,48,96,0.1);   color: var(--red);   border: 1px solid rgba(240,48,96,0.2); }
+.chip-sent-neu { background: var(--surf3); color: var(--dim); border: 1px solid var(--bord2); }
+
+.hint-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.hint-pill {
+  background: rgba(245,166,35,0.12);
+  color: var(--amber);
+  border: 1px solid rgba(245,166,35,0.3);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.hint-pill:hover { background: rgba(245,166,35,0.25); }
+
+.sp-time-bar-wrap {
+  margin-top: 8px;
+}
+
+.sp-time-bar-track {
+  height: 4px;
+  background: var(--surf3);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 3px;
+}
+
+.sp-time-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+.sp-time-label {
+  font-size: 10px;
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.sp-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.eye-btn {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.eye-btn:hover { color: var(--text); }
+
+.sp-action-btn {
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.sp-action-btn:hover { opacity: 0.8; }
+.btn-confirm  { background: rgba(34,208,122,0.15); color: var(--green);  border: 1px solid rgba(34,208,122,0.3); }
+.btn-link-sp  { background: rgba(240,48,96,0.15);  color: var(--red);    border: 1px solid rgba(240,48,96,0.3); }
+.btn-merge-sp { background: rgba(167,139,250,0.15); color: var(--purple); border: 1px solid rgba(167,139,250,0.3); }
+
+.merge-form {
+  margin-top: 8px;
+  display: none;
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  border-radius: var(--radius);
+  padding: 8px;
+  flex-direction: column;
+  gap: 6px;
+}
+.merge-form.visible { display: flex; }
+
+.merge-form select {
+  background: var(--surf2);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  width: 100%;
+}
+
+.merge-form-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.merge-form-btns button {
+  flex: 1;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid var(--bord2);
+}
+
+.merge-cancel-btn { background: var(--surf2); color: var(--dim); }
+.merge-go-btn { background: rgba(167,139,250,0.2); color: var(--purple); border-color: rgba(167,139,250,0.3) !important; }
+
+/* ── Right Panel ── */
+.right-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* ── Tab Bar ── */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--bord);
+  background: var(--surf);
+  flex-shrink: 0;
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.tab-badge {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--dim);
+  min-width: 20px;
+  text-align: center;
+}
+.tab-btn.active .tab-badge { color: var(--accent); border-color: var(--accent); background: rgba(0,207,170,0.08); }
+
+/* ── Tab Panes ── */
+.tab-pane {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+}
+.tab-pane.active { display: flex; }
+
+/* ── Merge Panel ── */
+#merge-panel {
+  background: var(--surf2);
+  border-bottom: 1px solid var(--bord);
+  flex-shrink: 0;
+}
+
+.merge-panel-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  flex-wrap: wrap;
+}
+
+.merge-panel-inner label {
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+#gap-slider {
+  accent-color: var(--accent);
+  width: 100px;
+  cursor: pointer;
+}
+
+#gap-input {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  width: 60px;
+  text-align: center;
+}
+
+.merge-panel-inner span {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.merge-panel-inner button {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  white-space: nowrap;
+}
+.merge-panel-inner button:hover { border-color: var(--accent); }
+
+#merge-counts {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* ── Transcript Toolbar ── */
+.transcript-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--bord);
+  background: var(--surf);
+  flex-shrink: 0;
+}
+
+#turn-stats {
+  flex: 1;
+  font-size: 11px;
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.ghost-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ghost-toggle input { accent-color: var(--accent); cursor: pointer; }
+
+/* ── Preview Banner ── */
+.preview-banner {
+  background: rgba(245,166,35,0.1);
+  border-bottom: 1px solid rgba(245,166,35,0.3);
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--amber);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ── Transcript List ── */
+#transcript-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── Turn Rows ── */
+.turn-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s;
+  outline: none;
+  position: relative;
+}
+.turn-row:hover { background: var(--surf2); }
+.turn-row.focused { background: var(--surf2); border-color: var(--accent); outline: 1px solid rgba(0,207,170,0.3); }
+.turn-row.deleted { opacity: 0.4; }
+.turn-row.deleted .turn-transcript { text-decoration: line-through; }
+.turn-row.ghost-turn { opacity: 0.28; }
+.turn-row.overridden { border-left: 3px solid var(--accent); padding-left: 8px; }
+.turn-row.sp-hidden { display: none !important; }
+
+.turn-ts {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+  padding-top: 3px;
+  min-width: 38px;
+}
+
+.speaker-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 6px;
+}
+
+.turn-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.turn-speaker {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.orig-sp {
+  color: var(--dim);
+  font-weight: 400;
+  text-decoration: line-through;
+  font-size: 10px;
+}
+
+.turn-transcript {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.turn-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* Subturn drawer */
+.subturn-toggle {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+  margin-top: 4px;
+  display: inline-block;
+}
+.subturn-toggle:hover { color: var(--text); }
+
+.subturn-drawer {
+  margin-top: 6px;
+  background: var(--surf3);
+  border: 1px solid var(--bord);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.subturn-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--bord);
+  font-size: 11px;
+}
+.subturn-row:last-child { border-bottom: none; }
+
+.subturn-ts {
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--dim);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.subturn-text {
+  color: var(--text);
+  flex: 1;
+}
+
+/* Turn actions */
+.turn-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.turn-row:hover .turn-actions,
+.turn-row.focused .turn-actions { opacity: 1; }
+
+.icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--dim);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  line-height: 1;
+}
+.icon-btn:hover { color: var(--text); border-color: var(--bord2); background: var(--surf3); }
+.btn-delete:hover  { color: var(--red);   border-color: rgba(240,48,96,0.3); }
+.btn-restore:hover { color: var(--green); border-color: rgba(34,208,122,0.3); }
+
+.reassign-wrap {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.reassign-select {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 11px;
+  max-width: 120px;
+}
+
+/* ── Frame Gallery ── */
+#frame-gallery {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  align-content: start;
+}
+
+.frame-card {
+  background: var(--surf2);
+  border: 1px solid var(--bord);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.12s;
+}
+.frame-card:hover { border-color: var(--bord2); transform: translateY(-1px); }
+
+.frame-img-wrap {
+  position: relative;
+  aspect-ratio: 16/9;
+  background: var(--surf3);
+  overflow: hidden;
+}
+
+.frame-img-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.frame-ts-badge {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: rgba(7,9,15,0.8);
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.frame-card-body {
+  padding: 10px;
+}
+
+.frame-sp-name {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+
+.frame-identity {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.frame-raw-text {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--dim);
+  max-height: 80px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.frame-footer {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--dim);
+  font-size: 14px;
+  text-align: center;
+  padding: 40px;
+  min-height: 200px;
+}
+
+/* ── Names Tab ── */
+#names-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.names-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.names-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--dim);
+  font-weight: 600;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--bord);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.names-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--bord);
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.names-table tr:hover td { background: var(--surf2); }
+
+.name-cell {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sp-label { font-weight: 500; }
+
+.mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.jump-btn {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--dim);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.jump-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ── Modals ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(7,9,15,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(3px);
+}
+
+.modal-box {
+  background: var(--surf);
+  border: 1px solid var(--bord2);
+  border-radius: calc(var(--radius) * 1.5);
+  min-width: 360px;
+  max-width: 520px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+
+.fm-box {
+  max-width: 860px;
+  width: 95%;
+}
+
+.modal-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--bord);
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+  line-height: 1;
+}
+.close-btn:hover { color: var(--text); }
+
+.modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+  font-weight: 500;
+}
+
+.modal-input {
+  background: var(--surf2);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: 'IBM Plex Sans', sans-serif;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+.modal-input:focus { border-color: var(--accent); }
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--bord);
+}
+
+.modal-footer button {
+  background: var(--surf3);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.modal-footer button:hover { opacity: 0.8; }
+.btn-primary {
+  background: var(--accent) !important;
+  color: var(--bg) !important;
+  border-color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+
+/* Frame Modal */
+.fm-img-wrap {
+  position: relative;
+  background: #000;
+  max-height: 55vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#fm-img {
+  max-width: 100%;
+  max-height: 55vh;
+  object-fit: contain;
+  display: block;
+}
+
+.fm-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(7,9,15,0.7);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  line-height: 1;
+}
+.fm-nav:hover { background: rgba(7,9,15,0.9); }
+.fm-nav-left  { left: 12px; }
+.fm-nav-right { right: 12px; }
+
+#fm-meta {
+  padding: 12px 16px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--bord);
+}
+
+.fm-meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fm-meta-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+.fm-meta-val   { color: var(--text); font-weight: 500; }
+
+#fm-reassign-row {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--bord);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+#fm-reassign-sel {
+  background: var(--surf2);
+  border: 1px solid var(--bord2);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  flex: 1;
+}
+
+/* Link modal results */
+#lm-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.lm-result-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surf2);
+  border: 1px solid var(--bord);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.lm-result-row:hover { border-color: var(--accent); }
+
+.lm-result-name  { font-weight: 600; flex: 1; font-size: 13px; }
+.lm-result-affil { font-size: 11px; color: var(--dim); }
+
+.lm-link-btn {
+  background: rgba(0,207,170,0.12);
+  border: 1px solid rgba(0,207,170,0.3);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ── Toast ── */
+#toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--surf);
+  border: 1px solid var(--bord2);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+  min-width: 200px;
+  max-width: 360px;
+  pointer-events: all;
+  animation: toast-in 0.2s ease;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.toast-ok   { border-left: 3px solid var(--green); }
+.toast-warn { border-left: 3px solid var(--amber); }
+.toast-err  { border-left: 3px solid var(--red); }
+
+/* ── Highlight pulse ── */
+.turn-highlight {
+  animation: highlight-pulse 1.4s ease;
+}
+@keyframes highlight-pulse {
+  0%   { background: rgba(0,207,170,0.25); }
+  100% { background: transparent; }
+}
+
+/* ── Scrollbars ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bord2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+
+.hidden { display: none !important; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>Bias-ometer Review</h1>
-  <select id="session-select"><option>Loading sessions…</option></select>
-  <div id="spinner"></div>
-</header>
-
-<div class="panels">
-  <div class="left-panel">
-    <div class="panel-header">
-      <strong id="session-label">—</strong>
-      <span id="session-duration"></span>
+<!-- ── Modals ── -->
+<div id="frame-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeFrameModal()">
+  <div class="modal-box fm-box">
+    <div class="modal-hdr">
+      <span id="fm-title"></span>
+      <button class="close-btn" onclick="closeFrameModal()">✕</button>
     </div>
-    <div class="speakers-list" id="speakers-list"></div>
+    <div class="fm-img-wrap">
+      <img id="fm-img" src="" alt="">
+      <button id="fm-prev" class="fm-nav fm-nav-left" onclick="stepFrame(-1)" style="display:none">‹</button>
+      <button id="fm-next" class="fm-nav fm-nav-right" onclick="stepFrame(1)" style="display:none">›</button>
+    </div>
+    <div id="fm-meta"></div>
+    <div id="fm-reassign-row" style="display:none">
+      <label>Re-assign turn:</label>
+      <select id="fm-reassign-sel" onchange="doFrameReassign(this.value)">
+        <option value="">— speaker —</option>
+      </select>
+    </div>
   </div>
-  <div class="right-panel">
-    <div class="transcript-header" id="transcript-header">
-      <span class="transcript-header-text" id="transcript-header-text">Select a session to begin</span>
-      <button class="btn btn-filter" id="merge-tune-btn" onclick="toggleMergePanel()" style="display:none;white-space:nowrap">⚙ Merge Tuning</button>
+</div>
+
+<div id="confirm-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeConfirmModal()">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span id="cm-title">Confirm Speaker</span>
+      <button class="close-btn" onclick="closeConfirmModal()">✕</button>
     </div>
-    <div class="merge-panel" id="merge-panel">
-      <div class="merge-preview-banner" id="merge-preview-banner">
-        Preview mode — changes not saved. Use Apply to save.
-      </div>
-      <div class="merge-row">
-        <label>Gap threshold</label>
-        <input type="range" id="merge-slider" min="0" max="5" step="0.1" value="1.0" oninput="onMergeSlider(this.value)">
-        <input type="number" id="merge-num" min="0" max="10" step="0.1" value="1.0" oninput="onMergeInput(this.value)">
-        <span style="font-size:12px;color:var(--muted)" id="merge-gap-unit">s</span>
-        <button class="btn btn-merge" id="merge-compress-btn" onclick="toggleCompressMode()" title="Merge all consecutive turns by the same speaker, regardless of gap size" style="margin-left:6px">⇒ Compress</button>
-      </div>
-      <div class="merge-counts" id="merge-counts"></div>
-      <div class="merge-row" style="margin-top:4px">
-        <button class="btn" id="merge-preview-toggle-btn" onclick="toggleMergePreview()">Show preview</button>
-        <button class="btn btn-primary" onclick="applyRemerge()" style="margin-left:auto">Apply to session</button>
-      </div>
+    <div class="modal-body">
+      <label>Name <input id="cm-name" type="text" class="modal-input" placeholder="Full name"></label>
+      <label>Affiliation <input id="cm-affil" type="text" class="modal-input" placeholder="Organization"></label>
+      <label>Role <input id="cm-role" type="text" class="modal-input" placeholder="Title / role"></label>
     </div>
-    <div class="filter-bar" id="filter-bar">
-      <span id="filter-label"></span>
-      <button onclick="clearFilter()" title="Clear filter">✕</button>
+    <div class="modal-footer">
+      <button onclick="closeConfirmModal()">Cancel</button>
+      <button class="btn-primary" onclick="doConfirmSave()">Save &amp; Link</button>
     </div>
-    <div class="transcript-list" id="transcript-list"></div>
+  </div>
+</div>
+
+<div id="link-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeLinkModal()">
+  <div class="modal-box">
+    <div class="modal-hdr">
+      <span>Link to Existing Speaker</span>
+      <button class="close-btn" onclick="closeLinkModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <input id="lm-search" type="text" class="modal-input" placeholder="Search by name…" oninput="searchSpeakers(this.value)">
+      <div id="lm-results"></div>
+    </div>
   </div>
 </div>
 
 <div id="toast-container"></div>
 
-<!-- Confirm Speaker Modal -->
-<div class="modal-overlay" id="confirm-modal">
-  <div class="modal">
-    <h3>Confirm Speaker Identity</h3>
-    <label>Name</label><input type="text" id="confirm-name" placeholder="Full name">
-    <label>Affiliation</label><input type="text" id="confirm-affiliation" placeholder="e.g. BBC News">
-    <label>Role</label><input type="text" id="confirm-role" placeholder="e.g. Political Correspondent">
-    <label>Notes</label><input type="text" id="confirm-notes" placeholder="Optional notes">
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('confirm-modal')">Cancel</button>
-      <button class="btn btn-primary" onclick="submitConfirm()">Save & Link</button>
-    </div>
-  </div>
-</div>
+<!-- ── Header ── -->
+<header>
+  <div class="logo">⊙ Bias-ometer · REVIEW</div>
+  <select id="session-select" onchange="onSessionChange()">
+    <option value="">— select session —</option>
+  </select>
+  <div class="spinner" id="spinner"></div>
+  <div id="hdr-stats"></div>
+  <button id="merge-tuning-btn" onclick="toggleMergePanel()">⊞ Merge Tuning</button>
+</header>
 
-<!-- Wrong Speaker / Search Modal -->
-<div class="modal-overlay" id="search-modal">
-  <div class="modal">
-    <h3>Find Existing Speaker</h3>
-    <label>Search by name</label>
-    <input type="text" id="search-input" placeholder="Type to search…" oninput="doSearch()">
-    <div class="search-results" id="search-results"></div>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('search-modal')">Cancel</button>
-    </div>
-  </div>
-</div>
+<!-- ── Panels ── -->
+<div class="panels">
 
-<!-- Frame Viewer Modal -->
-<div class="modal-overlay" id="frame-modal" onclick="if(event.target===this)closeModal('frame-modal')">
-  <div class="modal" style="max-width:960px;width:90vw;padding:0;overflow:hidden;background:var(--surface)">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)">
-      <span id="frame-modal-title" style="font-size:12px;color:var(--muted);font-family:monospace"></span>
-      <div style="display:flex;gap:8px;align-items:center">
-        <span id="frame-modal-hint" style="font-size:11px;color:var(--muted)"></span>
-        <button class="btn" onclick="closeModal('frame-modal')" style="padding:3px 10px;font-size:12px">✕</button>
+  <!-- Left Panel -->
+  <div class="left-panel">
+    <div class="left-header">
+      <h2>Speakers</h2>
+      <button class="vis-btn" onclick="showAllSpeakers()">All</button>
+      <button class="vis-btn" onclick="hideAllSpeakers()">None</button>
+    </div>
+    <div id="speakers-list"></div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="right-panel">
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-btn-transcript" onclick="switchTab('transcript')">
+        Transcript <span class="tab-badge" id="badge-transcript">0</span>
+      </button>
+      <button class="tab-btn" id="tab-btn-frames" onclick="switchTab('frames')">
+        Frame Gallery <span class="tab-badge" id="badge-frames">0</span>
+      </button>
+      <button class="tab-btn" id="tab-btn-names" onclick="switchTab('names')">
+        Names Mentioned <span class="tab-badge" id="badge-names">0</span>
+      </button>
+    </div>
+
+    <!-- Transcript Tab -->
+    <div id="tab-transcript" class="tab-pane active">
+      <div id="merge-panel" style="display:none">
+        <div class="merge-panel-inner">
+          <label>Gap (s)</label>
+          <input type="range" id="gap-slider" min="0" max="5" step="0.5" value="2" oninput="updateMergeGap(this.value)">
+          <input type="number" id="gap-input" min="0" max="5" step="0.5" value="2" oninput="updateMergeGap(this.value)">
+          <span>s</span>
+          <button onclick="doMergePreview()">Preview</button>
+          <button onclick="doApplyRemerge()">Apply to session</button>
+          <button onclick="doCompress()">⇒ Compress all</button>
+          <div id="merge-counts"></div>
+        </div>
       </div>
-    </div>
-    <div id="frame-modal-body" style="position:relative;min-height:180px;background:#111;display:flex;align-items:center;justify-content:center">
-      <img id="frame-modal-img" src="" alt="Turn frame"
-           style="max-width:100%;max-height:72vh;display:none;object-fit:contain">
-      <div id="frame-modal-spinner" style="color:#888;font-size:13px;padding:40px">Loading frame…</div>
-      <div id="frame-modal-error" style="display:none;color:#f87171;font-size:13px;padding:40px;text-align:center">
-        No video frame available for this turn.<br>
-        <span style="font-size:11px;color:#666">(Audio-only sources or missing video file)</span>
+      <div class="transcript-toolbar">
+        <span id="turn-stats"></span>
+        <label class="ghost-toggle">
+          <input type="checkbox" id="hide-ghosts" onchange="applyFilters()">
+          Hide ghost turns
+        </label>
       </div>
+      <div id="transcript-list"></div>
     </div>
-    <div style="display:flex;gap:8px;padding:8px 12px;border-top:1px solid var(--border);background:var(--surface)">
-      <button class="btn" id="frame-prev-btn" onclick="stepTurnFrame(-1)" title="Previous turn">← Prev</button>
-      <button class="btn" id="frame-next-btn" onclick="stepTurnFrame(+1)" title="Next turn">Next →</button>
-      <div style="flex:1"></div>
-      <button class="btn btn-primary" id="frame-reassign-btn" onclick="closeModal('frame-modal');toggleReassign(_frameTurnIdx)" style="display:none">↺ Reassign this turn</button>
+
+    <!-- Frames Tab -->
+    <div id="tab-frames" class="tab-pane" style="display:none">
+      <div id="frame-gallery"></div>
+    </div>
+
+    <!-- Names Tab -->
+    <div id="tab-names" class="tab-pane" style="display:none">
+      <div id="names-content"></div>
     </div>
   </div>
 </div>
 
-<script>
-// ── State ──────────────────────────────────────────────────────────────────────
-let currentSession = null;
-let reviewData = null;
-let activeFilter = null;
-let currentlyPlayingIdx = null;
-let _confirmEphId = null;
-let _searchEphId = null;
-let _selectedCatalogueId = null;
+<script>'use strict';
 
-const SPEAKER_COLORS = [
-  '#6366f1','#22c55e','#f59e0b','#ec4899','#14b8a6',
-  '#f97316','#a78bfa','#34d399','#fb923c','#38bdf8',
+// ── Global State ──
+let _session = null, _speakers = [], _allTurns = [], _turnByIdx = {}, _ghostMap = {};
+let _spById = {}, _allEphIds = [];
+let _mergeGap = 2, _mergePreview = null, _previewActive = false;
+let _fmSpeakers = [], _fmIdx = 0, _fmFromTurn = false, _fmTurnIdx = null;
+let _confirmEphId = null, _confirmCatalogueId = null;
+let _linkEphId = null;
+let _currentAudio = null;
+let _searchDebounce = null;
+const hiddenSpeakers = new Set();
+const _spColorCache = {};
+let _spColorIdx = 0;
+
+// ── Speaker Color Palette ──
+const PALETTE = [
+  '#00cfaa','#4d8bfa','#f5a623','#a78bfa','#f03060',
+  '#22d07a','#fb923c','#38bdf8','#e879f9','#84cc16',
+  '#06b6d4','#ec4899','#facc15','#4ade80','#f87171'
 ];
-const speakerColorMap = {};
 
-function getSpeakerColor(ephId) {
-  if (!speakerColorMap[ephId]) {
-    const keys = Object.keys(speakerColorMap);
-    speakerColorMap[ephId] = SPEAKER_COLORS[keys.length % SPEAKER_COLORS.length];
+function spColor(id) {
+  if (id && !_spColorCache[id]) {
+    _spColorCache[id] = PALETTE[_spColorIdx % PALETTE.length];
+    _spColorIdx++;
   }
-  return speakerColorMap[ephId];
+  return _spColorCache[id] || '#666';
 }
 
-function fmtTime(s) {
-  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
-  return `${m}:${String(sec).padStart(2,'0')}`;
+// ── Utility Functions ──
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
 }
 
-// ── Toast ──────────────────────────────────────────────────────────────────────
-function toast(msg, type='success') {
+function fmtTime(secs) {
+  if (secs == null || isNaN(secs)) return '--:--';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function fmtDur(secs) {
+  if (!secs) return '0s';
+  if (secs < 60) return `${Math.round(secs)}s`;
+  return `${Math.floor(secs/60)}m${Math.round(secs%60)}s`;
+}
+
+function confClass(c) {
+  if (c >= 0.7) return 'chip-hi';
+  if (c >= 0.4) return 'chip-med';
+  return 'chip-low';
+}
+
+function displayName(ephId) {
+  const sp = _spById?.[ephId];
+  return sp ? (sp.display_name || ephId) : (ephId || '?');
+}
+
+function initials(name) {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// ── API Helper ──
+async function api(method, path, body) {
+  const opts = { method };
+  if (body) opts.body = body;
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`${res.status} ${text || res.statusText}`);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+// ── Spinner ──
+function showSpinner(v) {
+  const el = document.getElementById('spinner');
+  if (el) el.style.display = v ? 'block' : 'none';
+}
+
+// ── Toast ──
+function toast(msg, type = 'ok') {
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
   el.textContent = msg;
   document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  setTimeout(() => el.remove(), 3600);
 }
 
-// ── Spinner ────────────────────────────────────────────────────────────────────
-function setLoading(on) {
-  document.getElementById('spinner').style.display = on ? 'block' : 'none';
-}
-
-// ── Modal helpers ──────────────────────────────────────────────────────────────
-function openModal(id) { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-
-// ── API helpers ────────────────────────────────────────────────────────────────
-async function api(method, path, formData) {
-  const opts = { method };
-  if (formData) opts.body = formData;
-  const res = await fetch(path, opts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || res.statusText);
+// ── Ghost Map ──
+function buildGhostMap(turns) {
+  const ghosts = {};
+  for (const t of turns) {
+    const hasText = t.transcript && t.transcript.trim();
+    if (hasText) continue;
+    const overlaps = turns.some(other => {
+      if (other.index === t.index) return false;
+      if (!other.transcript || !other.transcript.trim()) return false;
+      return t.start < other.end && t.end > other.start;
+    });
+    if (overlaps) ghosts[t.index] = true;
   }
-  return res.json();
+  return ghosts;
 }
 
-// ── Session loading ────────────────────────────────────────────────────────────
-async function loadSessions() {
-  setLoading(true);
-  try {
-    const sessions = await api('GET', '/sessions');
-    const sel = document.getElementById('session-select');
-    sel.innerHTML = sessions.map(s =>
-      `<option value="${s.session_id}">${s.source_name || s.session_id} — ${s.processed_at?.slice(0,10)}</option>`
-    ).join('');
-    if (sessions.length > 0) {
-      await loadReview(sessions[0].session_id);
-    }
-  } catch (e) {
-    toast('Failed to load sessions: ' + e.message, 'error');
-  } finally {
-    setLoading(false);
+// ── Names Mentions ──
+function buildNamesMentions() {
+  const allHints = new Set();
+  for (const sp of _speakers) {
+    for (const h of (sp.name_hints || [])) allHints.add(h);
   }
-}
 
-document.getElementById('session-select').addEventListener('change', async e => {
-  await loadReview(e.target.value);
-});
-
-async function loadReview(sessionId) {
-  setLoading(true);
-  if (sessionId !== currentSession) {
-    activeFilter = null;
-    document.getElementById('filter-bar').classList.remove('visible');
-  }
-  currentSession = sessionId;
-  Object.keys(speakerColorMap).forEach(k => delete speakerColorMap[k]);
-  try {
-    reviewData = await api('GET', `/review/${sessionId}`);
-    renderUI();
-  } catch (e) {
-    toast('Failed to load session: ' + e.message, 'error');
-  } finally {
-    setLoading(false);
-  }
-}
-
-// ── Render ─────────────────────────────────────────────────────────────────────
-function renderUI() {
-  if (!reviewData) return;
-  const { session, speakers, all_ephemeral_ids } = reviewData;
-
-  // Pre-assign colors
-  all_ephemeral_ids.forEach(id => getSpeakerColor(id));
-
-  document.getElementById('session-label').textContent = session.source_name || session.session_id;
-  document.getElementById('session-duration').textContent =
-    `${fmtTime(session.total_duration)}  ·  ${session.num_speakers} speakers`;
-
-  // Stats
-  const totalTurns = speakers.reduce((a, s) => a + s.turn_count, 0);
-  const allTurnsFlat = speakers.flatMap(s => s.turns);
-  const totalOverrides = allTurnsFlat.filter(t => t.overridden && !t.deleted).length;
-  const totalDeleted = allTurnsFlat.filter(t => t.deleted).length;
-  const totalMerged = allTurnsFlat.filter(t => !t.deleted && (t.merged_count || 1) > 1).length;
-  const deletedPart = totalDeleted > 0 ? ` · ${totalDeleted} deleted` : '';
-  const mergedPart = totalMerged > 0 ? ` · ${totalMerged} merged` : '';
-  const nerHintCount = speakers.filter(sp => {
-    const isLinked = sp.display_name && sp.display_name !== sp.ephemeral_id;
-    return !isLinked && Array.isArray(sp.name_hints) && sp.name_hints.length > 0;
-  }).length;
-  const nerPart = nerHintCount > 0 ? ` · ${nerHintCount} NER hint${nerHintCount !== 1 ? 's' : ''}` : '';
-  document.getElementById('transcript-header-text').textContent =
-    `${totalTurns} turns · ${session.num_speakers} speakers · ${totalOverrides} override${totalOverrides !== 1 ? 's' : ''}${deletedPart}${mergedPart}${nerPart}`;
-
-  renderSpeakers(speakers, session);
-  renderTranscript(speakers, all_ephemeral_ids, session);
-  if (activeFilter) applyFilter(activeFilter);
-
-  // Show merge tuning button now that a session is loaded
-  document.getElementById('merge-tune-btn').style.display = 'inline-block';
-  // Re-sync merge panel if it's open
-  if (document.getElementById('merge-panel').classList.contains('open')) _initMergePanel();
-}
-
-function renderSpeakers(speakers, session) {
-  const container = document.getElementById('speakers-list');
-  const total = session.total_duration || 1;
-
-  container.innerHTML = speakers.map(sp => {
-    const color = getSpeakerColor(sp.ephemeral_id);
-    const displayName = sp.display_name || sp.ephemeral_id;
-    const initials = sp.ephemeral_id.replace('SPEAKER_', 'S');
-    const pct = ((sp.total_speaking_time / total) * 100).toFixed(1);
-
-    let thumbHtml = '';
-    if (sp.frame_url) {
-      thumbHtml = `<img src="${sp.frame_url}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-        <span style="display:none;width:100%;height:100%;align-items:center;justify-content:center">${initials}</span>`;
-    } else {
-      thumbHtml = `<span>${initials}</span>`;
-    }
-
-    let badgeHtml = '';
-    if (sp.suggested_name && sp.confidence) {
-      const cls = sp.confidence === 'high' ? 'conf-high' : sp.confidence === 'medium' ? 'conf-medium' : 'conf-low';
-      badgeHtml = `<span class="confidence-chip ${cls}">${sp.suggested_name} [${sp.confidence}]</span>`;
-    }
-
-    const isLinked = sp.display_name && sp.display_name !== sp.ephemeral_id;
-    let nerHintsHtml = '';
-    if (!isLinked && Array.isArray(sp.name_hints) && sp.name_hints.length > 0) {
-      const btnHtml = sp.name_hints.map(n =>
-        `<button class="ner-hint-btn" onclick="event.stopPropagation();applyHint('${sp.ephemeral_id}',${JSON.stringify(n)})">${n}</button>`
-      ).join('');
-      nerHintsHtml = `<div class="ner-hints"><span class="ner-label">NER</span>${btnHtml}</div>`;
-    }
-
-    const mergeOptions = speakers
-      .filter(s => s.ephemeral_id !== sp.ephemeral_id)
-      .map(s => `<option value="${s.ephemeral_id}">${s.display_name || s.ephemeral_id}</option>`)
-      .join('');
-
-    return `
-    <div class="speaker-card" id="card-${sp.ephemeral_id}" onclick="scrollToSpeaker('${sp.ephemeral_id}')">
-      <div class="speaker-card-top">
-        <div class="speaker-thumb" style="border: 2px solid ${color}">${thumbHtml}</div>
-        <div class="speaker-info">
-          <div class="speaker-name">${displayName}</div>
-          ${sp.affiliation || sp.role ? `<div class="speaker-meta">${[sp.affiliation, sp.role].filter(Boolean).join(' · ')}</div>` : ''}
-          <div class="speaker-eph">${sp.ephemeral_id}</div>
-          ${badgeHtml}
-          ${nerHintsHtml}
-        </div>
-      </div>
-      <div class="time-bar-wrap">
-        <div class="time-bar"><div class="time-bar-fill" style="width:${pct}%;background:${color}"></div></div>
-        <div class="time-label">${sp.total_speaking_time.toFixed(1)}s · ${sp.turn_count} turns · ${pct}%</div>
-      </div>
-      <div class="card-actions">
-        <button class="btn btn-success" onclick="event.stopPropagation();openConfirm('${sp.ephemeral_id}')">✓ Confirm</button>
-        <button class="btn btn-danger" onclick="event.stopPropagation();openSearch('${sp.ephemeral_id}')">✗ Wrong</button>
-        <button class="btn btn-merge" onclick="event.stopPropagation();toggleMerge('${sp.ephemeral_id}')">⇒ Merge…</button>
-        <button class="btn btn-filter" id="filter-btn-${sp.ephemeral_id}" onclick="event.stopPropagation();toggleFilter('${sp.ephemeral_id}')">⊙ Filter</button>
-      </div>
-      <div class="inline-form" id="merge-form-${sp.ephemeral_id}">
-        <label>Merge all turns of ${sp.ephemeral_id} into:</label>
-        <select id="merge-target-${sp.ephemeral_id}">${mergeOptions}</select>
-        <div class="inline-form-actions">
-          <button class="btn" onclick="toggleMerge('${sp.ephemeral_id}')">Cancel</button>
-          <button class="btn btn-primary" onclick="submitMerge('${sp.ephemeral_id}')">Merge</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function _buildCompressedRuns(allTurns) {
-  // Group consecutive turns with the same original_speaker into compressed entries.
-  // Deleted turns always break a run (they are passed through unchanged).
-  const result = [];
-  let i = 0;
-  while (i < allTurns.length) {
-    const first = allTurns[i];
-    if (first.deleted) {
-      result.push({ ...first, _compressed: false, _runLen: 1 });
-      i++;
-      continue;
-    }
-    // Extend the run while speaker stays the same and turns are not deleted
-    let j = i + 1;
-    while (j < allTurns.length &&
-           !allTurns[j].deleted &&
-           allTurns[j].original_speaker === first.original_speaker) {
-      j++;
-    }
-    const run = allTurns.slice(i, j);
-    if (run.length === 1) {
-      result.push({ ...first, _compressed: false, _runLen: 1 });
-    } else {
-      const parts = run.map(t => (t.transcript || '').trim()).filter(Boolean);
-      const last = run[run.length - 1];
-      result.push({
-        ...first,
-        end: last.end,
-        duration: last.end - first.start,
-        transcript: parts.length > 0 ? parts.join('...') : null,
-        _compressed: true,
-        _runLen: run.length,
-      });
-    }
-    i = j;
-  }
-  return result;
-}
-
-function renderTranscript(speakers, allIds, session) {
-  // Build flat sorted turn list with speaker info
-  const allTurns = [];
-  const speakerLookup = {};
-  speakers.forEach(sp => {
-    speakerLookup[sp.ephemeral_id] = sp;
-    sp.turns.forEach(t => allTurns.push({ ...t, _speaker: sp }));
-  });
-  allTurns.sort((a, b) => a.index - b.index);
-
-  // In compress mode, group consecutive same-speaker turns into single display rows
-  const displayTurns = _compressMode ? _buildCompressedRuns(allTurns) : allTurns;
-
-  const container = document.getElementById('transcript-list');
-  container.innerHTML = displayTurns.map(turn => {
-    const effColor = getSpeakerColor(turn.effective_speaker);
-    const origColor = getSpeakerColor(turn.original_speaker);
-    const effSp = speakerLookup[turn.effective_speaker];
-    const effName = (effSp?.display_name) || turn.effective_speaker;
-    const origName = turn.original_speaker;
-
-    const sentClass = turn.sentiment === 'positive' ? 'sent-positive'
-      : turn.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
-
-    const compressedSuffix = turn._compressed
-      ? ` <span style="font-size:11px;font-weight:400;color:var(--muted)">(Compressed: ${turn._runLen})</span>`
-      : '';
-
-    const speakerLabel = turn.overridden
-      ? `<span class="orig">${origName}</span><strong style="color:${effColor}">${effName}${compressedSuffix}</strong>`
-      : `<span style="color:${effColor}">${effName}${compressedSuffix}</span>`;
-
-    const selectOptions = allIds.map(id => {
-      const sp = speakerLookup[id];
-      return `<option value="${id}" ${id === turn.effective_speaker ? 'selected' : ''}>${sp?.display_name || id}</option>`;
-    }).join('');
-
-    const rowClasses = ['turn-row', turn.overridden && !turn.deleted ? 'overridden' : '', turn.deleted ? 'deleted' : ''].filter(Boolean).join(' ');
-    const borderStyle = (turn.overridden && !turn.deleted) ? `border-left-color:${effColor}` : '';
-
-    const actionButtons = turn.deleted
-      ? `<button class="icon-btn btn-restore" title="Restore turn" onclick="restoreTurn(${turn.index})">↩</button>`
-      : `<div class="reassign-wrap">
-          <button class="icon-btn" title="Reassign (R)" onclick="toggleReassign(${turn.index})">↺</button>
-          <select class="reassign-select" id="reassign-${turn.index}"
-            onchange="submitReassign(${turn.index}, this.value)"
-            onkeydown="if(event.key==='Escape'){this.classList.remove('open');}">${selectOptions}</select>
-        </div>
-        <button class="icon-btn" id="play-btn-${turn.index}" title="Play / Stop" onclick="togglePlayTurn(${turn.index},${turn.start},${turn.end})">▶</button>
-        <button class="icon-btn btn-frame" title="View frame (F)" onclick="viewTurnFrame(${turn.index})">📷</button>
-        <button class="icon-btn btn-delete" title="Delete turn (D)" onclick="deleteTurn(${turn.index})">🗑</button>`;
-
-    const mergedCount = turn.merged_count || 1;
-    const mergedBadge = (!turn.deleted && mergedCount > 1)
-      ? `<span class="confidence-chip conf-low" style="cursor:pointer" onclick="toggleSubTurns(${turn.index})" title="Click to expand constituent turns">merged ${mergedCount} ▾</span>`
-      : '';
-
-    // Sub-turn drawer
-    const originalTurns = reviewData?.session?.original_turns || [];
-    let subTurnsHtml = '';
-    if (!turn.deleted && mergedCount > 1 && originalTurns.length > 0) {
-      const subs = originalTurns.filter(ot =>
-        ot.speaker_id === turn.original_speaker &&
-        ot.start >= turn.start - 0.01 &&
-        ot.end <= turn.end + 0.01
-      );
-      if (subs.length > 0) {
-        subTurnsHtml = `<div class="sub-turns" id="sub-turns-${turn.index}">` +
-          subs.map(st => {
-            const excerpt = (st.transcript || '').trim().slice(0, 80) + ((st.transcript || '').length > 80 ? '…' : '');
-            return `<div class="sub-turn-row"><span class="sub-ts">${fmtTime(st.start)}→${fmtTime(st.end)}</span><span class="sub-text">${excerpt || '<em style="color:#555">(silent)</em>'}</span></div>`;
-          }).join('') +
-          '</div>';
+  const mentions = [];
+  for (const turn of _allTurns) {
+    if (turn.deleted) continue;
+    if (!turn.transcript) continue;
+    const lower = turn.transcript.toLowerCase();
+    for (const name of allHints) {
+      if (lower.includes(name.toLowerCase())) {
+        const spId = turn.effective_speaker || turn.original_speaker;
+        const sp = _spById[spId];
+        mentions.push({
+          name,
+          speakerId: spId,
+          displayName: sp ? (sp.display_name || sp.ephemeral_id) : spId,
+          turnStart: turn.start,
+          turnIndex: turn.index
+        });
       }
     }
+  }
 
-    const chipsHtml = turn.deleted
-      ? `<span class="deleted-chip">DELETED</span>`
-      : `<span class="sentiment-chip ${sentClass}">${turn.sentiment}</span>
-         ${turn.overridden ? `<span style="font-size:10px;color:var(--muted)">overridden${turn.override_notes ? ': ' + turn.override_notes : ''}</span>` : ''}
-         ${mergedBadge}`;
+  mentions.sort((a, b) => a.turnStart - b.turnStart);
 
-    const turnFilterSpeaker = turn.deleted ? turn.original_speaker : turn.effective_speaker;
-    return `
-    <div class="${rowClasses}"
-         id="turn-${turn.index}"
-         data-filter-speaker="${turnFilterSpeaker}"
-         style="${borderStyle}"
-         tabindex="0"
-         onkeydown="handleTurnKey(event, ${turn.index})"
-         onfocus="setActiveSpeaker('${turn.original_speaker}')">
-      <span class="turn-ts">[${fmtTime(turn.start)} → ${fmtTime(turn.end)}]</span>
-      <span class="speaker-dot" style="background:${effColor}"></span>
-      <div class="turn-body">
-        <div class="turn-speaker">${speakerLabel}</div>
-        <div class="turn-transcript">${(turn.transcript != null && turn.transcript !== '')
-          ? turn.transcript
-          : '<em style="color:var(--muted)">(no transcript)</em>'}</div>
-        <div class="turn-chips">${chipsHtml}</div>
-        ${subTurnsHtml}
-      </div>
-      <div class="turn-actions">
-        ${actionButtons}
-        <audio id="audio-${turn.index}"></audio>
-      </div>
-    </div>`;
-  }).join('');
+  const deduped = [];
+  const lastSeen = {};
+  for (const m of mentions) {
+    const key = `${m.name.toLowerCase()}|${m.speakerId}`;
+    if (lastSeen[key] !== undefined && m.turnStart - lastSeen[key] < 60) continue;
+    lastSeen[key] = m.turnStart;
+    deduped.push(m);
+  }
+
+  return deduped;
 }
 
-// ── Keyboard shortcuts ─────────────────────────────────────────────────────────
-document.addEventListener('keydown', e => {
-  const frameModalOpen = document.getElementById('frame-modal').classList.contains('open');
+// ── Speaker Visibility ──
+function toggleSpVis(id) {
+  if (hiddenSpeakers.has(id)) hiddenSpeakers.delete(id);
+  else hiddenSpeakers.add(id);
+  const card = document.querySelector(`.speaker-card[data-eph="${CSS.escape(id)}"]`);
+  if (card) {
+    card.classList.toggle('sp-hidden-card', hiddenSpeakers.has(id));
+    const eye = card.querySelector('.eye-btn');
+    if (eye) eye.textContent = hiddenSpeakers.has(id) ? '○' : '●';
+  }
+  applyFilters();
+}
 
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.reassign-select.open').forEach(el => el.classList.remove('open'));
-    document.querySelectorAll('.modal-overlay.open').forEach(el => el.classList.remove('open'));
+function showAllSpeakers() {
+  hiddenSpeakers.clear();
+  document.querySelectorAll('.speaker-card').forEach(c => {
+    c.classList.remove('sp-hidden-card');
+    const e = c.querySelector('.eye-btn');
+    if (e) e.textContent = '●';
+  });
+  applyFilters();
+}
+
+function hideAllSpeakers() {
+  for (const sp of _speakers) hiddenSpeakers.add(sp.ephemeral_id);
+  document.querySelectorAll('.speaker-card').forEach(c => {
+    c.classList.add('sp-hidden-card');
+    const e = c.querySelector('.eye-btn');
+    if (e) e.textContent = '○';
+  });
+  applyFilters();
+}
+
+function applyFilters() {
+  const hideGhosts = document.getElementById('hide-ghosts')?.checked;
+  document.querySelectorAll('.turn-row[data-ti]').forEach(row => {
+    const ti = +row.dataset.ti;
+    const turn = _turnByIdx[ti];
+    if (!turn) return;
+    const spId = turn.deleted
+      ? turn.original_speaker
+      : (turn.effective_speaker || turn.original_speaker);
+    const ghost = _ghostMap[ti];
+    const hide = hiddenSpeakers.has(spId) || (hideGhosts && ghost);
+    row.classList.toggle('sp-hidden', hide);
+  });
+  updateTurnStats();
+}
+
+function updateTurnStats() {
+  const hideGhosts = document.getElementById('hide-ghosts')?.checked;
+  let visible = 0, total = 0;
+  for (const t of _allTurns) {
+    if (t.deleted) continue;
+    total++;
+    const spId = t.effective_speaker || t.original_speaker;
+    const ghost = _ghostMap[t.index];
+    if (!hiddenSpeakers.has(spId) && !(hideGhosts && ghost)) visible++;
+  }
+  const el = document.getElementById('turn-stats');
+  if (el) el.textContent = `${visible} of ${total} turns visible`;
+}
+
+// ── Stats ──
+function updateStats() {
+  const activeTurns = _allTurns.filter(t => !t.deleted);
+  const overrides = _allTurns.filter(t =>
+    t.overridden || (t.effective_speaker && t.effective_speaker !== t.original_speaker)
+  );
+  const ghosts = Object.keys(_ghostMap).length;
+
+  document.getElementById('hdr-stats').innerHTML = `
+    <span class="stat-chip"><strong>${activeTurns.length}</strong> turns</span>
+    <span class="stat-chip"><strong>${_speakers.length}</strong> speakers</span>
+    <span class="stat-chip"><strong>${overrides.length}</strong> overrides</span>
+    <span class="stat-chip"><strong>${ghosts}</strong> ghosts</span>
+  `;
+
+  updateTurnStats();
+
+  const frameCount = _speakers.filter(s =>
+    s.frame_url && String(s.frame_url).trim() &&
+    s.raw_text && String(s.raw_text).trim()
+  ).length;
+  const namesMentions = buildNamesMentions();
+
+  document.getElementById('badge-transcript').textContent = activeTurns.length;
+  document.getElementById('badge-frames').textContent = frameCount;
+  document.getElementById('badge-names').textContent = namesMentions.length;
+}
+
+// ── Tab Switching ──
+function switchTab(name) {
+  const tabs = ['transcript', 'frames', 'names'];
+  tabs.forEach(t => {
+    const pane = document.getElementById(`tab-${t}`);
+    const btn  = document.getElementById(`tab-btn-${t}`);
+    if (t === name) {
+      if (pane) { pane.style.display = 'flex'; pane.classList.add('active'); }
+      if (btn)  btn.classList.add('active');
+    } else {
+      if (pane) { pane.style.display = 'none'; pane.classList.remove('active'); }
+      if (btn)  btn.classList.remove('active');
+    }
+  });
+}
+
+// ── Merge Panel Toggle ──
+function toggleMergePanel() {
+  const p = document.getElementById('merge-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+// ── Merge Gap Sync ──
+function updateMergeGap(v) {
+  const val = parseFloat(v);
+  if (isNaN(val)) return;
+  _mergeGap = val;
+  const slider = document.getElementById('gap-slider');
+  const input  = document.getElementById('gap-input');
+  if (slider && parseFloat(slider.value) !== val) slider.value = val;
+  if (input  && parseFloat(input.value)  !== val) input.value  = val;
+}
+
+// ── Merge Preview ──
+async function doMergePreview() {
+  if (!_session) return;
+  const sid = _session.session_id;
+  const gap = _mergeGap;
+  try {
+    const data = await api('GET', `/review/${sid}/merge-preview?gap=${gap}`);
+    _mergePreview = data;
+    _previewActive = true;
+    const orig   = data.original_count || data.orig || 0;
+    const merged = data.merged_count   || data.merged || 0;
+    const diff   = orig - merged;
+    const pct    = orig > 0 ? Math.round(diff / orig * 100) : 0;
+    document.getElementById('merge-counts').textContent =
+      `Original: ${orig} → Gap ${gap}s: ${merged} turns (-${diff}, ${pct}% reduction)`;
+    renderTranscript();
+  } catch(e) {
+    toast(e.message, 'err');
+  }
+}
+
+// ── Apply Remerge ──
+async function doApplyRemerge(gapOverride) {
+  if (!_session) return;
+  const sid = _session.session_id;
+  const gap = gapOverride !== undefined ? gapOverride : _mergeGap;
+  showSpinner(true);
+  try {
+    const fd = new FormData();
+    fd.append('merge_gap_secs', gap);
+    await api('POST', `/review/${sid}/apply-remerge`, fd);
+    _previewActive = false;
+    _mergePreview  = null;
+    document.getElementById('merge-counts').textContent = '';
+    toast('Remerge applied', 'ok');
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
+  }
+}
+
+// ── Compress ──
+function doCompress() {
+  doApplyRemerge(9999);
+}
+
+// ── Render Speakers ──
+function renderSpeakers() {
+  const container = document.getElementById('speakers-list');
+  if (!container) return;
+
+  if (!_speakers.length) {
+    container.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:12px;">No speakers</div>';
     return;
   }
 
-  if (frameModalOpen) {
-    if (e.key === 'ArrowLeft')  { e.preventDefault(); stepTurnFrame(-1); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); stepTurnFrame(+1); }
-    if (e.key === 'f' || e.key === 'F') { e.preventDefault(); closeModal('frame-modal'); }
+  const totalTime = _speakers.reduce((s, sp) => s + (sp.speaking_time || 0), 0);
+
+  let html = '';
+  for (const sp of _speakers) {
+    const ephId   = sp.ephemeral_id;
+    const color   = spColor(ephId);
+    const name    = sp.display_name || ephId;
+    const conf    = sp.vision_confidence != null ? sp.vision_confidence
+                  : sp.confidence != null ? sp.confidence : null;
+    const confStr = conf != null ? `${Math.round(conf * 100)}%` : 'N/A';
+    const confCls = conf != null ? confClass(conf) : 'chip-low';
+    const spTime  = sp.speaking_time || 0;
+    const turnCount = sp.turn_count || (sp.turns ? sp.turns.length : 0);
+    const pct     = totalTime > 0 ? Math.round(spTime / totalTime * 100) : 0;
+    const isHidden = hiddenSpeakers.has(ephId);
+
+    // Thumbnail
+    let thumbHtml;
+    if (sp.frame_url) {
+      thumbHtml = `<img class="sp-thumb" src="${esc(sp.frame_url)}" alt="" onerror="this.style.display='none'">`;
+    } else {
+      const bgColor = color + '33';
+      thumbHtml = `<div class="sp-thumb-initials" style="background:${bgColor};color:${color}">${esc(initials(name))}</div>`;
+    }
+
+    // Hint pills (only when no catalogue_id)
+    let hintHtml = '';
+    if (!sp.catalogue_id && sp.name_hints && sp.name_hints.length) {
+      hintHtml = '<div class="hint-pills">';
+      for (const h of sp.name_hints) {
+        hintHtml += `<button class="hint-pill" onclick="event.stopPropagation();applyHint('${esc(ephId)}','${esc(h)}')">${esc(h)}</button>`;
+      }
+      hintHtml += '</div>';
+    }
+
+    // Affiliation / role
+    const affilParts = [sp.affiliation, sp.role].filter(Boolean);
+    const affilHtml  = affilParts.length
+      ? `<div class="sp-affil">${esc(affilParts.join(' · '))}</div>`
+      : '';
+
+    // Merge select options (other speakers only)
+    let mergeOpts = '<option value="">— merge into —</option>';
+    for (const other of _speakers) {
+      if (other.ephemeral_id === ephId) continue;
+      mergeOpts += `<option value="${esc(other.ephemeral_id)}">${esc(other.display_name || other.ephemeral_id)}</option>`;
+    }
+
+    html += `
+<div class="speaker-card${isHidden ? ' sp-hidden-card' : ''}" data-eph="${esc(ephId)}">
+  <div class="sp-card-top">
+    ${thumbHtml}
+    <div class="sp-info">
+      <div class="sp-name" style="color:${color}">${esc(name)}</div>
+      <div class="sp-eph">${esc(ephId)}</div>
+      ${affilHtml}
+      <div class="sp-chips">
+        <span class="chip ${confCls}">Vision: ${confStr}</span>
+      </div>
+      ${hintHtml}
+    </div>
+  </div>
+  <div class="sp-time-bar-wrap">
+    <div class="sp-time-bar-track">
+      <div class="sp-time-bar-fill" style="width:${pct}%;background:${color}"></div>
+    </div>
+    <div class="sp-time-label">${fmtDur(spTime)} · ${turnCount} turns · ${pct}%</div>
+  </div>
+  <div class="sp-card-actions">
+    <button class="eye-btn" onclick="toggleSpVis('${esc(ephId)}')" title="Toggle visibility">${isHidden ? '○' : '●'}</button>
+    <button class="sp-action-btn btn-confirm"  onclick="openConfirmModal('${esc(ephId)}')">✓ Confirm</button>
+    <button class="sp-action-btn btn-link-sp"  onclick="openLinkModal('${esc(ephId)}')">✗ Link</button>
+    <button class="sp-action-btn btn-merge-sp" onclick="toggleMergeForm('${esc(ephId)}')">⇒ Merge</button>
+  </div>
+  <div class="merge-form" id="merge-form-${esc(ephId)}">
+    <select id="merge-sel-${esc(ephId)}">${mergeOpts}</select>
+    <div class="merge-form-btns">
+      <button class="merge-cancel-btn" onclick="toggleMergeForm('${esc(ephId)}')">Cancel</button>
+      <button class="merge-go-btn"     onclick="doMergeSpeakers('${esc(ephId)}', document.getElementById('merge-sel-${esc(ephId)}').value)">Merge</button>
+    </div>
+  </div>
+</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+function toggleMergeForm(ephId) {
+  const el = document.getElementById(`merge-form-${ephId}`);
+  if (el) el.classList.toggle('visible');
+}
+
+// ── Render Transcript ──
+function renderTranscript() {
+  const container = document.getElementById('transcript-list');
+  if (!container) return;
+
+  let html = '';
+
+  // Preview banner
+  if (_previewActive && _mergePreview) {
+    html += `<div class="preview-banner">⚠ Preview active — showing merged view (gap ${_mergeGap}s). Click "Apply to session" to save.</div>`;
+  }
+
+  for (const turn of _allTurns) {
+    const ti       = turn.index;
+    const effSp    = turn.effective_speaker || turn.original_speaker;
+    const origSp   = turn.original_speaker;
+    const isDeleted  = !!turn.deleted;
+    const isGhost    = !!_ghostMap[ti];
+    const isOverridden = !isDeleted &&
+      (turn.overridden || (turn.effective_speaker && turn.effective_speaker !== turn.original_speaker));
+    const color = spColor(effSp);
+
+    let classes = 'turn-row';
+    if (isDeleted)    classes += ' deleted';
+    if (isGhost && !isDeleted) classes += ' ghost-turn';
+    if (isOverridden) classes += ' overridden';
+
+    // Speaker label
+    let spHtml;
+    if (isOverridden) {
+      spHtml = `<span class="orig-sp">${esc(displayName(origSp))}</span> → <span style="color:${color}">${esc(displayName(effSp))}</span>`;
+    } else {
+      spHtml = `<span style="color:${color}">${esc(displayName(effSp))}</span>`;
+    }
+
+    // Chips
+    let chipsHtml = '';
+    if (turn.sentiment) {
+      const sl = turn.sentiment.toLowerCase();
+      const sc = sl === 'positive' ? 'chip-sent-pos' : sl === 'negative' ? 'chip-sent-neg' : 'chip-sent-neu';
+      chipsHtml += `<span class="chip ${sc}">${esc(turn.sentiment)}</span>`;
+    }
+    if (isGhost)      chipsHtml += `<span class="chip chip-ghost">ghost</span>`;
+    if (isOverridden) chipsHtml += `<span class="chip chip-ovr">overridden</span>`;
+
+    const mergedCount = turn.merged_count || (turn.sub_turns ? turn.sub_turns.length : 0);
+    if (mergedCount > 1) {
+      chipsHtml += `<span class="chip chip-merged">merged ${mergedCount}</span>`;
+    }
+
+    // Sub-turn drawer
+    let subHtml = '';
+    if (mergedCount > 1) {
+      subHtml += `<button class="subturn-toggle" onclick="event.stopPropagation();toggleSubturnDrawer(${ti})">▾ ${mergedCount} segments</button>`;
+      subHtml += `<div class="subturn-drawer" id="st-${ti}" style="display:none">`;
+      if (turn.sub_turns && turn.sub_turns.length) {
+        for (const st of turn.sub_turns) {
+          subHtml += `<div class="subturn-row">
+            <span class="subturn-ts">${fmtTime(st.start)}–${fmtTime(st.end)}</span>
+            <span class="subturn-text">${esc(st.transcript || '')}</span>
+          </div>`;
+        }
+      }
+      subHtml += '</div>';
+    }
+
+    // Actions
+    let actHtml;
+    if (isDeleted) {
+      actHtml = `<button class="icon-btn btn-restore" onclick="event.stopPropagation();doRestore(${ti})" title="Restore">↩</button>`;
+    } else {
+      let spOpts = '<option value="">— assign to —</option>';
+      for (const sp of _speakers) {
+        spOpts += `<option value="${esc(sp.ephemeral_id)}"${sp.ephemeral_id === effSp ? ' selected' : ''}>${esc(sp.display_name || sp.ephemeral_id)}</option>`;
+      }
+      actHtml = `
+        <div class="reassign-wrap" id="rw-${ti}">
+          <button class="icon-btn" onclick="event.stopPropagation();toggleReassign(${ti})" title="Reassign (R)">↺</button>
+          <select class="reassign-select" id="rsel-${ti}" onchange="doAssign(${ti}, this.value)" style="display:none">${spOpts}</select>
+        </div>
+        <button class="icon-btn" onclick="event.stopPropagation();playAudio(${ti})" title="Play (P)">▶</button>
+        <button class="icon-btn" onclick="event.stopPropagation();viewTurnFrame(${ti})" title="Frame (F)">◫</button>
+        <button class="icon-btn btn-delete" onclick="event.stopPropagation();doDelete(${ti})" title="Delete (D)">⊘</button>
+      `;
+    }
+
+    html += `
+<div class="${classes}" data-ti="${ti}" data-sp="${esc(effSp)}" id="turn-${ti}" tabindex="0">
+  <span class="turn-ts">${fmtTime(turn.start)}</span>
+  <span class="speaker-dot" style="background:${color}"></span>
+  <div class="turn-body">
+    <div class="turn-speaker">${spHtml}</div>
+    <div class="turn-transcript">${esc(turn.transcript || '')}</div>
+    <div class="turn-chips">${chipsHtml}</div>
+    ${subHtml}
+  </div>
+  <div class="turn-actions">${actHtml}</div>
+</div>`;
+  }
+
+  if (!_allTurns.length) {
+    html = '<div class="empty-state">No turns found for this session.</div>';
+  }
+
+  container.innerHTML = html;
+
+  // Focus listeners
+  container.querySelectorAll('.turn-row[data-ti]').forEach(row => {
+    row.addEventListener('click', () => {
+      document.querySelectorAll('.turn-row.focused').forEach(r => r.classList.remove('focused'));
+      row.classList.add('focused');
+    });
+  });
+
+  applyFilters();
+}
+
+// ── Render Frame Gallery ──
+function renderFrameGallery() {
+  const container = document.getElementById('frame-gallery');
+  if (!container) return;
+
+  const qualified = _speakers.filter(s =>
+    s.frame_url && String(s.frame_url).trim() &&
+    s.raw_text  && String(s.raw_text).trim()
+  );
+
+  if (!qualified.length) {
+    container.innerHTML = '<div class="empty-state">No frames with OCR text detected.</div>';
     return;
   }
-});
 
-function handleTurnKey(e, idx) {
-  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleReassign(idx); }
-  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); deleteTurn(idx); }
-  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); viewTurnFrame(idx); }
+  const spWithFrame = _speakers.filter(s => s.frame_url);
+
+  let html = '';
+  for (const sp of qualified) {
+    const ephId  = sp.ephemeral_id;
+    const color  = spColor(ephId);
+    const name   = sp.display_name || ephId;
+    const conf   = sp.vision_confidence != null ? sp.vision_confidence
+                 : sp.confidence != null ? sp.confidence : null;
+    const confStr = conf != null ? `${Math.round(conf * 100)}%` : 'N/A';
+    const confCls = conf != null ? confClass(conf) : 'chip-low';
+    const identParts = [sp.suggested_name, sp.suggested_title, sp.suggested_org].filter(Boolean);
+    const fmIdx  = spWithFrame.findIndex(s => s.ephemeral_id === ephId);
+
+    html += `
+<div class="frame-card" onclick="openFrameModal(${fmIdx >= 0 ? fmIdx : 0}, false, null)">
+  <div class="frame-img-wrap">
+    <img src="${esc(sp.frame_url)}" alt="">
+    <span class="frame-ts-badge">${fmtTime(sp.capture_timestamp)}</span>
+  </div>
+  <div class="frame-card-body">
+    <div class="frame-sp-name" style="color:${color}">${esc(name)}</div>
+    <div class="frame-identity">${esc(identParts.join(' · '))}</div>
+    <pre class="frame-raw-text">${esc(sp.raw_text)}</pre>
+    <div class="frame-footer">
+      <span class="chip chip-eph">${esc(ephId)}</span>
+      <span class="chip ${confCls}">Vision: ${confStr}</span>
+    </div>
+  </div>
+</div>`;
+  }
+
+  container.innerHTML = html;
 }
 
-// ── Speaker actions ────────────────────────────────────────────────────────────
-function scrollToSpeaker(ephId) {
-  // Find first turn for this speaker and scroll to it
-  if (!reviewData) return;
-  const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId);
-  if (!sp || sp.turns.length === 0) return;
-  const firstTurn = sp.turns.reduce((a, b) => a.index < b.index ? a : b);
-  const el = document.getElementById(`turn-${firstTurn.index}`);
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  setActiveSpeaker(ephId);
+// ── Render Names ──
+function renderNames() {
+  const container = document.getElementById('names-content');
+  if (!container) return;
+
+  const mentions = buildNamesMentions();
+
+  if (!mentions.length) {
+    container.innerHTML = '<div class="empty-state">No names mentioned found.</div>';
+    return;
+  }
+
+  let html = `
+<table class="names-table">
+  <thead><tr><th>Name</th><th>Said by</th><th>Time</th><th></th></tr></thead>
+  <tbody>`;
+
+  for (const m of mentions) {
+    const color = spColor(m.speakerId);
+    html += `<tr>
+      <td class="name-cell">${esc(m.name)}</td>
+      <td><span class="sp-label" style="color:${color}">${esc(m.displayName)}</span></td>
+      <td class="mono">${fmtTime(m.turnStart)}</td>
+      <td><button class="jump-btn" onclick="jumpToTurn(${m.turnIndex})">Jump ↗</button></td>
+    </tr>`;
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
 }
 
-function setActiveSpeaker(ephId) {
-  document.querySelectorAll('.speaker-card.active').forEach(el => el.classList.remove('active'));
-  const card = document.getElementById(`card-${ephId}`);
-  if (card) card.classList.add('active');
+// ── Jump to Turn ──
+function jumpToTurn(idx) {
+  switchTab('transcript');
+  setTimeout(() => {
+    const el = document.getElementById(`turn-${idx}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.querySelectorAll('.turn-row.focused').forEach(r => r.classList.remove('focused'));
+    el.classList.add('focused');
+    el.classList.add('turn-highlight');
+    setTimeout(() => el.classList.remove('turn-highlight'), 1400);
+  }, 50);
 }
 
-function toggleFilter(ephId) {
-  if (activeFilter === ephId) {
-    clearFilter();
-  } else {
-    applyFilter(ephId);
+// ── Subturn Drawer Toggle ──
+function toggleSubturnDrawer(ti) {
+  const el = document.getElementById(`st-${ti}`);
+  if (!el) return;
+  const btn = el.previousElementSibling;
+  const isOpen = el.style.display !== 'none';
+  el.style.display = isOpen ? 'none' : 'block';
+  if (btn && btn.classList.contains('subturn-toggle')) {
+    const count = el.querySelectorAll('.subturn-row').length;
+    btn.textContent = isOpen ? `▾ ${count} segments` : `▴ ${count} segments`;
   }
 }
 
-function applyFilter(ephId) {
-  activeFilter = ephId;
-  // Show/hide turn rows
-  document.querySelectorAll('.turn-row').forEach(row => {
-    row.classList.toggle('filtered-out', row.dataset.filterSpeaker !== ephId);
-  });
-  // Update card styles and button labels
-  document.querySelectorAll('.speaker-card').forEach(card => {
-    card.classList.toggle('filter-active', card.id === `card-${ephId}`);
-  });
-  document.querySelectorAll('[id^="filter-btn-"]').forEach(btn => {
-    const id = btn.id.replace('filter-btn-', '');
-    btn.classList.toggle('active', id === ephId);
-    btn.textContent = id === ephId ? '⊙ Filtering' : '⊙ Filter';
-  });
-  // Show filter bar
-  const sp = reviewData?.speakers.find(s => s.ephemeral_id === ephId);
-  const name = sp?.display_name || ephId;
-  document.getElementById('filter-label').textContent = `Showing: ${name}`;
-  document.getElementById('filter-bar').classList.add('visible');
+// ── Toggle Reassign ──
+function toggleReassign(ti) {
+  const sel = document.getElementById(`rsel-${ti}`);
+  if (!sel) return;
+  const isVisible = sel.style.display !== 'none';
+  sel.style.display = isVisible ? 'none' : 'inline-block';
+  if (!isVisible) sel.focus();
 }
 
-function clearFilter() {
-  activeFilter = null;
-  document.querySelectorAll('.turn-row').forEach(row => row.classList.remove('filtered-out'));
-  document.querySelectorAll('.speaker-card').forEach(card => card.classList.remove('filter-active'));
-  document.querySelectorAll('[id^="filter-btn-"]').forEach(btn => {
-    btn.classList.remove('active');
-    btn.textContent = '⊙ Filter';
-  });
-  document.getElementById('filter-bar').classList.remove('visible');
+// ── Do Assign ──
+async function doAssign(ti, spId) {
+  if (!spId || !_session) return;
+  const sid = _session.session_id;
+  showSpinner(true);
+  try {
+    const fd = new FormData();
+    fd.append('speaker_id', spId);
+    await api('POST', `/review/${sid}/turns/${ti}/assign`, fd);
+    toast('Speaker reassigned', 'ok');
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
+  }
 }
 
-// ── NER hint application ───────────────────────────────────────────────────────
-async function applyHint(ephemeralId, name) {
-  if (!currentSession) return;
+// ── Do Delete ──
+async function doDelete(ti) {
+  if (!_session) return;
+  const sid = _session.session_id;
+  showSpinner(true);
+  try {
+    await api('POST', `/review/${sid}/turns/${ti}/delete`);
+    toast('Turn deleted', 'ok');
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
+  }
+}
+
+// ── Do Restore ──
+async function doRestore(ti) {
+  if (!_session) return;
+  const sid = _session.session_id;
+  showSpinner(true);
+  try {
+    await api('POST', `/review/${sid}/turns/${ti}/restore`);
+    toast('Turn restored', 'ok');
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
+  }
+}
+
+// ── Play Audio ──
+async function playAudio(ti) {
+  if (!_session) return;
+  const turn = _turnByIdx[ti];
+  if (!turn) return;
+  const sid = _session.session_id;
+  try {
+    if (_currentAudio) {
+      _currentAudio.pause();
+      _currentAudio = null;
+    }
+    const url = `/review/${sid}/audio/${ti}?start=${turn.start}&end=${turn.end}`;
+    const audio = new Audio(url);
+    _currentAudio = audio;
+    audio.play().catch(err => toast('Audio playback failed: ' + err.message, 'err'));
+  } catch(e) {
+    toast(e.message, 'err');
+  }
+}
+
+// ── View Turn Frame ──
+function viewTurnFrame(ti) {
+  const turn = _turnByIdx[ti];
+  if (!turn) return;
+  const effSp = turn.effective_speaker || turn.original_speaker;
+  const spWithFrame = _speakers.filter(s => s.frame_url);
+  const idx = spWithFrame.findIndex(s => s.ephemeral_id === effSp);
+
+  // Populate reassign select
+  const sel = document.getElementById('fm-reassign-sel');
+  if (sel) {
+    let opts = '<option value="">— speaker —</option>';
+    for (const sp of _speakers) {
+      opts += `<option value="${esc(sp.ephemeral_id)}">${esc(sp.display_name || sp.ephemeral_id)}</option>`;
+    }
+    sel.innerHTML = opts;
+  }
+
+  openFrameModal(idx >= 0 ? idx : 0, true, ti);
+}
+
+// ── Apply Hint ──
+async function applyHint(ephId, name) {
+  if (!_session) return;
+  const sid = _session.session_id;
+  showSpinner(true);
   try {
     const fd = new FormData();
     fd.append('name', name);
-    const res = await api('POST', `/review/${currentSession}/speakers/${ephemeralId}/apply-hint`, fd);
-    if (res.status === 'linked') {
-      toast('Linked via NER hint');
-      await loadReview(currentSession);
-    } else if (res.status === 'no_match') {
-      toast(`No catalogue match for '${name}' — use Search to add them`, 'warn');
-    } else if (res.status === 'ambiguous') {
-      toast('Ambiguous — use Search to pick the right entry', 'warn');
-      openSearch(ephemeralId);
-      setTimeout(() => {
-        const inp = document.getElementById('search-input');
-        if (inp) { inp.value = name; doSearch(); }
-      }, 50);
-    }
-  } catch (e) {
-    toast('Apply hint failed: ' + e.message, 'error');
+    await api('POST', `/review/${sid}/speakers/${encodeURIComponent(ephId)}/apply-hint`, fd);
+    toast(`Applied name hint: ${name}`, 'ok');
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
   }
 }
 
-// ── Merge tuning ───────────────────────────────────────────────────────────────
-let _mergePreviewActive = false;
-let _mergeDebounceTimer = null;
-let _previewTurns = null;   // null = not in preview, [] = preview turns
-let _compressMode = false;
-const COMPRESS_GAP = 9999;
-
-function toggleMergePanel() {
-  const panel = document.getElementById('merge-panel');
-  const btn = document.getElementById('merge-tune-btn');
-  const isOpen = panel.classList.toggle('open');
-  btn.classList.toggle('active', isOpen);
-  if (isOpen) _initMergePanel();
-}
-
-function _initMergePanel() {
-  if (!reviewData) return;
-  const gap = reviewData.session.merge_gap_secs ?? 1.0;
-  _compressMode = false;
-  _syncCompressModeUI();
-  document.getElementById('merge-slider').value = Math.min(gap, 5);
-  document.getElementById('merge-num').value = gap;
-  _refreshMergeCounts(gap);
-}
-
-function toggleCompressMode() {
-  _compressMode = !_compressMode;
-  _syncCompressModeUI();
-  // Re-render transcript immediately using client-side grouping
-  if (reviewData) renderTranscript(reviewData.speakers, reviewData.all_ephemeral_ids, reviewData.session);
-  // Update counts via API
-  _scheduleMergePreview(_compressMode ? COMPRESS_GAP : (parseFloat(document.getElementById('merge-num').value) || 0));
-}
-
-function _syncCompressModeUI() {
-  const slider = document.getElementById('merge-slider');
-  const numInput = document.getElementById('merge-num');
-  const unit = document.getElementById('merge-gap-unit');
-  const btn = document.getElementById('merge-compress-btn');
-  slider.disabled = _compressMode;
-  numInput.disabled = _compressMode;
-  slider.style.opacity = _compressMode ? '0.35' : '1';
-  numInput.style.opacity = _compressMode ? '0.35' : '1';
-  unit.style.opacity = _compressMode ? '0.35' : '1';
-  btn.classList.toggle('active', _compressMode);
-  btn.textContent = _compressMode ? '⇒ Compress (on)' : '⇒ Compress';
-}
-
-function _effectiveGap() {
-  return _compressMode ? COMPRESS_GAP : (parseFloat(document.getElementById('merge-num').value) || 0);
-}
-
-function onMergeSlider(val) {
-  if (_compressMode) return;
-  document.getElementById('merge-num').value = val;
-  _scheduleMergePreview(parseFloat(val));
-}
-
-function onMergeInput(val) {
-  if (_compressMode) return;
-  const v = Math.max(0, Math.min(10, parseFloat(val) || 0));
-  document.getElementById('merge-slider').value = Math.min(5, v);
-  _scheduleMergePreview(v);
-}
-
-function _scheduleMergePreview(gap) {
-  clearTimeout(_mergeDebounceTimer);
-  _mergeDebounceTimer = setTimeout(() => _fetchMergePreview(gap), 280);
-}
-
-async function _fetchMergePreview(gap) {
-  if (!currentSession) return;
+// ── Merge Speakers ──
+async function doMergeSpeakers(srcEph, tgtEph) {
+  if (!tgtEph) { toast('Please select a target speaker', 'warn'); return; }
+  if (!_session) return;
+  const sid = _session.session_id;
+  showSpinner(true);
   try {
     const fd = new FormData();
-    fd.append('merge_gap_secs', gap);
-    const res = await api('POST', `/review/${currentSession}/remerge`, fd);
-    _updateMergeCountsDisplay(res.original_count, res.merged_count, gap);
-    if (_mergePreviewActive) {
-      _previewTurns = res.turns;
-      _renderPreviewTranscript(res.turns);
-    }
-  } catch (e) {
-    document.getElementById('merge-counts').textContent = 'Preview failed: ' + e.message;
+    fd.append('source_ephemeral_id', srcEph);
+    fd.append('target_ephemeral_id', tgtEph);
+    await api('POST', `/review/${sid}/merge-speakers`, fd);
+    toast('Speakers merged', 'ok');
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
   }
 }
 
-function _refreshMergeCounts(gap) {
-  if (!reviewData) return;
-  const origCount = (reviewData.session.original_turns || []).length;
-  const curCount = reviewData.speakers.reduce((a, s) => a + s.turns.length, 0);
-  const source = origCount || curCount;
-  _updateMergeCountsDisplay(source, curCount, gap);
-  _scheduleMergePreview(gap);
+// ── Frame Modal ──
+function openFrameModal(spIdx, fromTurn, turnIdx) {
+  _fmSpeakers = _speakers.filter(s => s.frame_url);
+  _fmIdx      = (spIdx >= 0 && spIdx < _fmSpeakers.length) ? spIdx : 0;
+  _fmFromTurn = !!fromTurn;
+  _fmTurnIdx  = turnIdx != null ? turnIdx : null;
+
+  document.getElementById('fm-prev').style.display = _fmFromTurn ? 'flex' : 'none';
+  document.getElementById('fm-next').style.display = _fmFromTurn ? 'flex' : 'none';
+  document.getElementById('fm-reassign-row').style.display = _fmFromTurn ? 'flex' : 'none';
+
+  renderFrameModalContent();
+  document.getElementById('frame-modal').style.display = 'flex';
 }
 
-function _updateMergeCountsDisplay(origCount, mergedCount, gap) {
-  const el = document.getElementById('merge-counts');
-  const diff = origCount - mergedCount;
-  const pct = origCount ? Math.round((diff / origCount) * 100) : 0;
-  let diffHtml = '';
-  if (origCount > 0 && (gap > 0 || _compressMode)) {
-    const cls = diff > 0 ? 'reduction' : (diff < 0 ? 'increase' : '');
-    const sign = diff >= 0 ? '-' : '+';
-    diffHtml = ` <span class="${cls}">(${sign}${Math.abs(diff)}, ${pct}% reduction)</span>`;
-  }
-  const gapLabel = (_compressMode || gap >= COMPRESS_GAP) ? '∞ (compress)' : `${gap}s`;
-  el.innerHTML = `Original: <strong>${origCount}</strong> turns &rarr; Gap <strong>${gapLabel}</strong>: <strong>${mergedCount}</strong> turns${diffHtml}`;
+function renderFrameModalContent() {
+  if (!_fmSpeakers.length) return;
+  const sp = _fmSpeakers[_fmIdx];
+  if (!sp) return;
+
+  document.getElementById('fm-img').src = sp.frame_url || '';
+  document.getElementById('fm-title').textContent = sp.display_name || sp.ephemeral_id;
+
+  const conf    = sp.vision_confidence != null ? sp.vision_confidence
+                : sp.confidence != null ? sp.confidence : null;
+  const confStr = conf != null ? `${Math.round(conf * 100)}%` : 'N/A';
+
+  document.getElementById('fm-meta').innerHTML = `
+    <div class="fm-meta-row"><span class="fm-meta-label">Suggested Name</span><span class="fm-meta-val">${esc(sp.suggested_name || '—')}</span></div>
+    <div class="fm-meta-row"><span class="fm-meta-label">Title</span><span class="fm-meta-val">${esc(sp.suggested_title || '—')}</span></div>
+    <div class="fm-meta-row"><span class="fm-meta-label">Organization</span><span class="fm-meta-val">${esc(sp.suggested_org || '—')}</span></div>
+    <div class="fm-meta-row"><span class="fm-meta-label">Confidence</span><span class="fm-meta-val">${esc(confStr)}</span></div>
+    <div class="fm-meta-row"><span class="fm-meta-label">Captured At</span><span class="fm-meta-val">${fmtTime(sp.capture_timestamp)}</span></div>
+    <div class="fm-meta-row"><span class="fm-meta-label">Speaker ID</span><span class="fm-meta-val" style="font-family:'IBM Plex Mono',monospace;font-size:11px">${esc(sp.ephemeral_id)}</span></div>
+  `;
 }
 
-function toggleMergePreview() {
-  _mergePreviewActive = !_mergePreviewActive;
-  const btn = document.getElementById('merge-preview-toggle-btn');
-  const banner = document.getElementById('merge-preview-banner');
-  if (_mergePreviewActive) {
-    btn.textContent = 'Hide preview';
-    btn.classList.add('active');
-    banner.classList.add('visible');
-    _fetchMergePreview(_effectiveGap());
-  } else {
-    btn.textContent = 'Show preview';
-    btn.classList.remove('active');
-    banner.classList.remove('visible');
-    _previewTurns = null;
-    // Restore actual transcript
-    if (reviewData) renderTranscript(reviewData.speakers, reviewData.all_ephemeral_ids, reviewData.session);
-  }
+function stepFrame(dir) {
+  if (!_fmSpeakers.length) return;
+  _fmIdx = (_fmIdx + dir + _fmSpeakers.length) % _fmSpeakers.length;
+  renderFrameModalContent();
 }
 
-function _renderPreviewTranscript(previewTurnsList) {
-  if (!reviewData) return;
-  // Build a fake speakers structure from preview turns for rendering
-  const speakerLookup = {};
-  reviewData.speakers.forEach(s => { speakerLookup[s.ephemeral_id] = s; });
-  const allIds = reviewData.all_ephemeral_ids;
-
-  const container = document.getElementById('transcript-list');
-  container.innerHTML = previewTurnsList.map((turn, i) => {
-    const effColor = getSpeakerColor(turn.speaker_id);
-    const sp = speakerLookup[turn.speaker_id];
-    const name = sp?.display_name || turn.speaker_id;
-    const sentClass = turn.sentiment === 'positive' ? 'sent-positive'
-      : turn.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
-    const mergedBadge = (turn.merged_count || 1) > 1
-      ? `<span class="confidence-chip conf-low">merged ${turn.merged_count}</span>` : '';
-    return `
-    <div class="turn-row" style="border-left:3px solid ${effColor}22">
-      <span class="turn-ts">[${fmtTime(turn.start)} → ${fmtTime(turn.end)}]</span>
-      <span class="speaker-dot" style="background:${effColor}"></span>
-      <div class="turn-body">
-        <div class="turn-speaker"><span style="color:${effColor}">${name}</span></div>
-        <div class="turn-transcript">${turn.transcript || '<em style="color:var(--muted)">(no transcript)</em>'}</div>
-        <div class="turn-chips">
-          <span class="sentiment-chip ${sentClass}">${turn.sentiment || 'neutral'}</span>
-          ${mergedBadge}
-        </div>
-      </div>
-    </div>`;
-  }).join('');
+function closeFrameModal() {
+  document.getElementById('frame-modal').style.display = 'none';
 }
 
-async function applyRemerge() {
-  const gap = _effectiveGap();
-  const origCount = (reviewData?.session?.original_turns || []).length;
-  const hasOverrides = reviewData?.speakers.some(s => s.turns.some(t => t.overridden || t.deleted));
-  const modeLabel = (_compressMode || gap >= COMPRESS_GAP) ? 'Compress (no gap limit)' : `merge gap ${gap}s`;
-  let msg = `Apply ${modeLabel} to this session?`;
-  if (hasOverrides) msg += '\n\nWARNING: This will clear all speaker reassignments and deletions you have made.';
-  if (!confirm(msg)) return;
-  try {
-    const fd = new FormData();
-    fd.append('merge_gap_secs', gap);
-    const res = await api('POST', `/review/${currentSession}/apply-remerge`, fd);
-    const modeLabel = (_compressMode || gap >= COMPRESS_GAP) ? 'compressed' : `gap ${gap}s`;
-    toast(`Applied (${modeLabel}): ${res.original_count} → ${res.merged_count} turns`);
-    // Exit preview + compress mode then reload
-    _mergePreviewActive = false;
-    _previewTurns = null;
-    _compressMode = false;
-    document.getElementById('merge-preview-toggle-btn').textContent = 'Show preview';
-    document.getElementById('merge-preview-toggle-btn').classList.remove('active');
-    document.getElementById('merge-preview-banner').classList.remove('visible');
-    _syncCompressModeUI();
-    await loadReview(currentSession);
-  } catch (e) {
-    toast('Apply failed: ' + e.message, 'error');
-  }
+function doFrameReassign(speakerId) {
+  if (!speakerId || _fmTurnIdx == null) return;
+  doAssign(_fmTurnIdx, speakerId);
+  closeFrameModal();
 }
 
-function toggleMerge(ephId) {
-  const form = document.getElementById(`merge-form-${ephId}`);
-  form.classList.toggle('open');
-}
-
-async function submitMerge(ephId) {
-  const target = document.getElementById(`merge-target-${ephId}`).value;
-  if (!target) return;
-  try {
-    const fd = new FormData();
-    fd.append('target_speaker', target);
-    const res = await api('POST', `/review/${currentSession}/speakers/${ephId}/merge`, fd);
-    toast(`Merged ${res.merged_turns} turns: ${ephId} → ${target}`);
-    await loadReview(currentSession);
-  } catch (e) {
-    toast('Merge failed: ' + e.message, 'error');
-  }
-}
-
-// ── Confirm modal ──────────────────────────────────────────────────────────────
-function openConfirm(ephId) {
+// ── Confirm Modal ──
+function openConfirmModal(ephId) {
   _confirmEphId = ephId;
-  const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId);
-  document.getElementById('confirm-name').value = sp?.display_name || sp?.suggested_name || '';
-  document.getElementById('confirm-affiliation').value = sp?.affiliation || sp?.suggested_org || '';
-  document.getElementById('confirm-role').value = sp?.role || sp?.suggested_title || '';
-  document.getElementById('confirm-notes').value = '';
-  openModal('confirm-modal');
+  const sp = _spById[ephId];
+  if (!sp) return;
+
+  document.getElementById('cm-title').textContent = `Confirm: ${sp.display_name || ephId}`;
+
+  if (sp.catalogue_id) {
+    _confirmCatalogueId = sp.catalogue_id;
+    document.getElementById('cm-name').value  = sp.display_name || sp.suggested_name || '';
+    document.getElementById('cm-affil').value = sp.affiliation  || sp.suggested_org   || '';
+    document.getElementById('cm-role').value  = sp.role         || sp.suggested_title  || '';
+  } else {
+    _confirmCatalogueId = null;
+    document.getElementById('cm-name').value  = sp.suggested_name  || sp.display_name || '';
+    document.getElementById('cm-affil').value = sp.suggested_org   || sp.affiliation  || '';
+    document.getElementById('cm-role').value  = sp.suggested_title || sp.role         || '';
+  }
+
+  document.getElementById('confirm-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('cm-name').focus(), 50);
 }
 
-async function submitConfirm() {
-  const name = document.getElementById('confirm-name').value.trim();
-  const affiliation = document.getElementById('confirm-affiliation').value.trim();
-  const role = document.getElementById('confirm-role').value.trim();
-  const notes = document.getElementById('confirm-notes').value.trim();
-  const ephId = _confirmEphId;
-  const sp = reviewData.speakers.find(s => s.ephemeral_id === ephId);
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').style.display = 'none';
+}
 
-  closeModal('confirm-modal');
+async function doConfirmSave() {
+  if (!_session) return;
+  const sid   = _session.session_id;
+  const name  = document.getElementById('cm-name').value.trim();
+  const affil = document.getElementById('cm-affil').value.trim();
+  const role  = document.getElementById('cm-role').value.trim();
+
+  if (!name) { toast('Name is required', 'warn'); return; }
+
+  showSpinner(true);
   try {
-    let catalogueId = sp?.catalogue_id;
-    if (!catalogueId) {
+    let catId = _confirmCatalogueId;
+
+    if (catId) {
       const fd = new FormData();
-      if (name) fd.append('name', name);
-      if (affiliation) fd.append('affiliation', affiliation);
-      if (role) fd.append('role', role);
-      if (notes) fd.append('notes', notes);
-      const res = await api('POST', '/speakers', fd);
-      catalogueId = res.catalogue_id;
+      fd.append('name', name);
+      fd.append('affiliation', affil);
+      fd.append('role', role);
+      await api('PUT', `/speakers/${catId}`, fd);
     } else {
       const fd = new FormData();
-      if (name) fd.append('name', name);
-      if (affiliation) fd.append('affiliation', affiliation);
-      if (role) fd.append('role', role);
-      if (notes) fd.append('notes', notes);
-      await api('PUT', `/speakers/${catalogueId}`, fd);
+      fd.append('name', name);
+      fd.append('affiliation', affil);
+      fd.append('role', role);
+      const result = await api('POST', '/speakers', fd);
+      catId = result.catalogue_id || result.id;
     }
+
     const lfd = new FormData();
-    lfd.append('session_id', currentSession);
-    lfd.append('ephemeral_id', ephId);
-    lfd.append('catalogue_id', catalogueId);
+    lfd.append('session_id', sid);
+    lfd.append('ephemeral_id', _confirmEphId);
+    lfd.append('catalogue_id', catId);
     await api('POST', '/link', lfd);
-    toast(`Speaker confirmed: ${name || ephId}`);
-    await loadReview(currentSession);
-  } catch (e) {
-    toast('Error confirming speaker: ' + e.message, 'error');
+
+    toast('Speaker confirmed and linked', 'ok');
+    closeConfirmModal();
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
   }
 }
 
-// ── Search modal ───────────────────────────────────────────────────────────────
-function openSearch(ephId) {
-  _searchEphId = ephId;
-  _selectedCatalogueId = null;
-  document.getElementById('search-input').value = '';
-  document.getElementById('search-results').innerHTML = '';
-  openModal('search-modal');
+// ── Link Modal ──
+function openLinkModal(ephId) {
+  _linkEphId = ephId;
+  document.getElementById('lm-search').value = '';
+  document.getElementById('lm-results').innerHTML = '';
+  document.getElementById('link-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('lm-search').focus(), 50);
 }
 
-async function doSearch() {
-  const q = document.getElementById('search-input').value.trim();
-  if (!q) { document.getElementById('search-results').innerHTML = ''; return; }
-  try {
-    const results = await api('GET', `/speakers?search=${encodeURIComponent(q)}`);
-    document.getElementById('search-results').innerHTML = results.slice(0, 10).map(r =>
-      `<div class="search-result-item" onclick="selectAndLink('${r.catalogue_id}')">
-        <strong>${r.display_name || r.catalogue_id}</strong>
-        ${r.affiliation ? `<span style="color:var(--muted);font-size:11px"> · ${r.affiliation}</span>` : ''}
-        <span style="font-size:10px;color:var(--accent);margin-left:6px">${r.catalogue_id}</span>
-      </div>`
-    ).join('');
-  } catch (e) {
-    toast('Search error: ' + e.message, 'error');
-  }
+function closeLinkModal() {
+  document.getElementById('link-modal').style.display = 'none';
 }
 
-async function selectAndLink(catalogueId) {
-  closeModal('search-modal');
-  try {
-    const fd = new FormData();
-    fd.append('session_id', currentSession);
-    fd.append('ephemeral_id', _searchEphId);
-    fd.append('catalogue_id', catalogueId);
-    await api('POST', '/link', fd);
-    toast(`Linked ${_searchEphId} → ${catalogueId}`);
-    await loadReview(currentSession);
-  } catch (e) {
-    toast('Link error: ' + e.message, 'error');
-  }
+function searchSpeakers(q) {
+  if (_searchDebounce) clearTimeout(_searchDebounce);
+  _searchDebounce = setTimeout(async () => {
+    if (!q.trim()) {
+      document.getElementById('lm-results').innerHTML = '';
+      return;
+    }
+    try {
+      const results = await api('GET', `/speakers?search=${encodeURIComponent(q)}`);
+      renderLinkResults(Array.isArray(results) ? results : (results.speakers || []));
+    } catch(e) {
+      document.getElementById('lm-results').innerHTML =
+        `<div style="color:var(--red);font-size:12px;padding:8px">${esc(e.message)}</div>`;
+    }
+  }, 300);
 }
 
-// ── Turn reassign ──────────────────────────────────────────────────────────────
-function toggleReassign(idx) {
-  const sel = document.getElementById(`reassign-${idx}`);
-  const isOpen = sel.classList.contains('open');
-  document.querySelectorAll('.reassign-select.open').forEach(el => el.classList.remove('open'));
-  if (!isOpen) {
-    sel.classList.add('open');
-    sel.focus();
-  }
-}
-
-async function submitReassign(idx, assignedSpeaker) {
-  const sel = document.getElementById(`reassign-${idx}`);
-  sel.classList.remove('open');
-  try {
-    const fd = new FormData();
-    fd.append('assigned_speaker', assignedSpeaker);
-    await api('POST', `/review/${currentSession}/turns/${idx}/assign`, fd);
-    toast(`Turn ${idx} reassigned to ${assignedSpeaker}`);
-    // Refresh only the affected turn row
-    await refreshTurnRow(idx);
-    // Update stats header
-    const totalOverrides = reviewData.speakers.reduce((a, s) =>
-      a + s.turns.filter(t => t.overridden).length, 0) + 1;
-    const headerText = document.getElementById('transcript-header-text');
-    headerText.textContent = headerText.textContent.replace(/\d+ override/, `${totalOverrides} override`);
-  } catch (e) {
-    toast('Reassign failed: ' + e.message, 'error');
-  }
-}
-
-async function refreshTurnRow(idx) {
-  // Re-fetch only this turn's data via the review endpoint
-  try {
-    const data = await api('GET', `/review/${currentSession}`);
-    reviewData = data;
-    // Find the turn in the updated data
-    const sp = data.speakers.flatMap(s => s.turns).find(t => t.index === idx);
-    if (!sp) return;
-    const speakerLookup = {};
-    data.speakers.forEach(s => { speakerLookup[s.ephemeral_id] = s; });
-
-    const effColor = getSpeakerColor(sp.effective_speaker);
-    const effSp = speakerLookup[sp.effective_speaker];
-    const effName = effSp?.display_name || sp.effective_speaker;
-    const sentClass = sp.sentiment === 'positive' ? 'sent-positive'
-      : sp.sentiment === 'negative' ? 'sent-negative' : 'sent-neutral';
-
-    const speakerLabel = sp.overridden
-      ? `<span class="orig">${sp.original_speaker}</span><strong style="color:${effColor}">${effName}</strong>`
-      : `<span style="color:${effColor}">${effName}</span>`;
-
-    const row = document.getElementById(`turn-${idx}`);
-    if (!row) return;
-    row.querySelector('.turn-speaker').innerHTML = speakerLabel;
-    row.querySelector('.speaker-dot').style.background = effColor;
-    row.classList.toggle('overridden', sp.overridden);
-    row.style.borderLeftColor = sp.overridden ? effColor : '';
-
-    const chipsEl = row.querySelector('.turn-chips');
-    chipsEl.innerHTML = `<span class="sentiment-chip ${sentClass}">${sp.sentiment}</span>
-      ${sp.overridden ? `<span style="font-size:10px;color:var(--muted)">overridden${sp.override_notes ? ': ' + sp.override_notes : ''}</span>` : ''}`;
-  } catch (e) {
-    // fallback: full reload
-    await loadReview(currentSession);
-  }
-}
-
-// ── Turn frame viewer ──────────────────────────────────────────────────────────
-let _frameTurnIdx = null;
-
-function viewTurnFrame(idx) {
-  _frameTurnIdx = idx;
-  const modal = document.getElementById('frame-modal');
-  const img   = document.getElementById('frame-modal-img');
-  const spin  = document.getElementById('frame-modal-spinner');
-  const err   = document.getElementById('frame-modal-error');
-  const title = document.getElementById('frame-modal-title');
-  const hint  = document.getElementById('frame-modal-hint');
-  const rbtn  = document.getElementById('frame-reassign-btn');
-
-  const allTurns = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index);
-  const turn = allTurns.find(t => t.index === idx);
-
-  img.style.display  = 'none';
-  img.src            = '';
-  spin.style.display = 'block';
-  err.style.display  = 'none';
-  rbtn.style.display = (turn && !turn.deleted) ? 'inline-flex' : 'none';
-
-  if (turn) {
-    title.textContent = `Turn ${idx}  ·  ${fmtTime(turn.start)} → ${fmtTime(turn.end)}  ·  ${turn.original_speaker}`;
-    hint.textContent  = 'F to close  ·  ← → to step turns';
-  }
-
-  modal.classList.add('open');
-
-  const url = `/review/${currentSession}/turns/${idx}/frame?_=${Date.now()}`;
-  img.onload = () => { spin.style.display = 'none'; img.style.display = 'block'; };
-  img.onerror = () => { spin.style.display = 'none'; err.style.display = 'block'; };
-  img.src = url;
-
-  const pos = allTurns.findIndex(t => t.index === idx);
-  document.getElementById('frame-prev-btn').disabled = pos <= 0;
-  document.getElementById('frame-next-btn').disabled = pos >= allTurns.length - 1;
-}
-
-function stepTurnFrame(delta) {
-  if (_frameTurnIdx === null) return;
-  const allTurns = reviewData.speakers.flatMap(s => s.turns).sort((a, b) => a.index - b.index);
-  const pos = allTurns.findIndex(t => t.index === _frameTurnIdx);
-  const next = allTurns[pos + delta];
-  if (next) viewTurnFrame(next.index);
-}
-
-// ── Turn delete / restore ──────────────────────────────────────────────────────
-async function deleteTurn(idx) {
-  try {
-    await api('DELETE', `/review/${currentSession}/turns/${idx}`);
-    toast(`Turn ${idx} deleted`);
-    await loadReview(currentSession);
-  } catch (e) {
-    toast('Delete failed: ' + e.message, 'error');
-  }
-}
-
-async function restoreTurn(idx) {
-  try {
-    await api('POST', `/review/${currentSession}/turns/${idx}/restore`);
-    toast(`Turn ${idx} restored`);
-    await loadReview(currentSession);
-  } catch (e) {
-    toast('Restore failed: ' + e.message, 'error');
-  }
-}
-
-// ── Audio playback ─────────────────────────────────────────────────────────────
-function _stopCurrentAudio() {
-  if (currentlyPlayingIdx === null) return;
-  const prev = document.getElementById(`audio-${currentlyPlayingIdx}`);
-  if (prev) { prev.pause(); prev.currentTime = 0; }
-  const btn = document.getElementById(`play-btn-${currentlyPlayingIdx}`);
-  if (btn) btn.textContent = '▶';
-  currentlyPlayingIdx = null;
-}
-
-async function togglePlayTurn(idx, startSec, endSec) {
-  if (currentlyPlayingIdx === idx) {
-    _stopCurrentAudio();
+function renderLinkResults(results) {
+  const container = document.getElementById('lm-results');
+  if (!results.length) {
+    container.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:8px;">No speakers found.</div>';
     return;
   }
-  _stopCurrentAudio();
-  const audioEl = document.getElementById(`audio-${idx}`);
-  const btn = document.getElementById(`play-btn-${idx}`);
+
+  let html = '';
+  for (const r of results) {
+    const catId  = r.catalogue_id || r.id;
+    const rName  = r.name || r.display_name || '—';
+    const rAffil = [r.affiliation, r.role].filter(Boolean).join(' · ');
+    html += `<div class="lm-result-row" onclick="doLinkSpeaker('${esc(catId)}')">
+      <div>
+        <div class="lm-result-name">${esc(rName)}</div>
+        ${rAffil ? `<div class="lm-result-affil">${esc(rAffil)}</div>` : ''}
+      </div>
+      <button class="lm-link-btn" onclick="event.stopPropagation();doLinkSpeaker('${esc(catId)}')">Link</button>
+    </div>`;
+  }
+  container.innerHTML = html;
+}
+
+async function doLinkSpeaker(catId) {
+  if (!_session || !_linkEphId) return;
+  const sid = _session.session_id;
+  showSpinner(true);
   try {
-    let url = `/review/${currentSession}/audio/${idx}`;
-    if (startSec !== undefined && endSec !== undefined) {
-      url += `?start=${startSec}&end=${endSec}`;
-    }
-    if (audioEl.dataset.audioUrl !== url) {
-      audioEl.dataset.audioUrl = url;
-      audioEl.src = url;
-      audioEl.load();
-    }
-    audioEl.currentTime = 0;
-    audioEl.onended = () => {
-      if (btn) btn.textContent = '▶';
-      currentlyPlayingIdx = null;
-    };
-    await audioEl.play();
-    currentlyPlayingIdx = idx;
-    if (btn) btn.textContent = '⏹';
-  } catch (e) {
-    toast('Audio not available for this source', 'error');
+    const fd = new FormData();
+    fd.append('session_id', sid);
+    fd.append('ephemeral_id', _linkEphId);
+    fd.append('catalogue_id', catId);
+    await api('POST', '/link', fd);
+    toast('Speaker linked', 'ok');
+    closeLinkModal();
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
   }
 }
 
-// ── Sub-turn drawer ────────────────────────────────────────────────────────────
-function toggleSubTurns(idx) {
-  const el = document.getElementById(`sub-turns-${idx}`);
-  if (!el) return;
-  const isOpen = el.classList.toggle('open');
-  // Update badge arrow
-  const badge = document.querySelector(`#turn-${idx} .confidence-chip`);
-  if (badge) badge.textContent = badge.textContent.replace(/[▾▴]/, isOpen ? '▴' : '▾');
+// ── Keyboard Shortcuts ──
+document.addEventListener('keydown', e => {
+  // Esc: close modals
+  if (e.key === 'Escape') {
+    if (document.getElementById('frame-modal').style.display   !== 'none') { closeFrameModal();   return; }
+    if (document.getElementById('confirm-modal').style.display !== 'none') { closeConfirmModal(); return; }
+    if (document.getElementById('link-modal').style.display    !== 'none') { closeLinkModal();    return; }
+  }
+
+  // Arrow keys in frame modal (only when opened from turn)
+  if (document.getElementById('frame-modal').style.display !== 'none' && _fmFromTurn) {
+    if (e.key === 'ArrowLeft')  { stepFrame(-1); return; }
+    if (e.key === 'ArrowRight') { stepFrame(1);  return; }
+  }
+
+  // Don't trigger turn shortcuts while typing
+  if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
+
+  const focused = document.querySelector('.turn-row.focused');
+  if (!focused) return;
+  const ti   = +focused.dataset.ti;
+  const turn = _turnByIdx[ti];
+  if (!turn || turn.deleted) return;
+
+  if (e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleReassign(ti); }
+  if (e.key === 'd' || e.key === 'D') { e.preventDefault(); doDelete(ti); }
+  if (e.key === 'f' || e.key === 'F') { e.preventDefault(); viewTurnFrame(ti); }
+  if (e.key === 'p' || e.key === 'P') { e.preventDefault(); playAudio(ti); }
+});
+
+// ── Core Flow ──
+async function init() {
+  await loadSessions();
 }
 
-// ── Init ───────────────────────────────────────────────────────────────────────
-loadSessions();
+async function loadSessions() {
+  try {
+    const sessions = await api('GET', '/sessions');
+    const sel  = document.getElementById('session-select');
+    const list = Array.isArray(sessions) ? sessions : (sessions.sessions || []);
+    sel.innerHTML = '<option value="">— select session —</option>';
+    for (const s of list) {
+      const sid = s.session_id || s.id || s;
+      const o   = document.createElement('option');
+      o.value   = sid;
+      o.textContent = sid;
+      sel.appendChild(o);
+    }
+    // Auto-select the latest session (first in list, sorted by processed_at DESC)
+    if (list.length > 0) {
+      const latestSid = list[0].session_id || list[0].id || list[0];
+      sel.value = latestSid;
+      await loadReview(latestSid);
+    }
+  } catch(e) {
+    toast('Failed to load sessions: ' + e.message, 'err');
+  }
+}
+
+async function onSessionChange() {
+  const sid = document.getElementById('session-select').value;
+  if (!sid) return;
+  showSpinner(true);
+  try {
+    await loadReview(sid);
+  } catch(e) {
+    toast(e.message, 'err');
+  } finally {
+    showSpinner(false);
+  }
+}
+
+async function loadReview(sid) {
+  // Reset state
+  hiddenSpeakers.clear();
+  const hg = document.getElementById('hide-ghosts');
+  if (hg) hg.checked = false;
+  _mergePreview  = null;
+  _previewActive = false;
+  Object.keys(_spColorCache).forEach(k => delete _spColorCache[k]);
+  _spColorIdx = 0;
+
+  const data = await api('GET', `/review/${sid}`);
+  _session = data.session || {};
+  _session.session_id = sid;
+  _speakers   = data.speakers || [];
+  _allEphIds  = data.all_ephemeral_ids || _speakers.map(s => s.ephemeral_id);
+
+  // Seed colors in registration order
+  for (const id of _allEphIds) spColor(id);
+
+  // Speaker lookup
+  _spById = {};
+  for (const sp of _speakers) _spById[sp.ephemeral_id] = sp;
+
+  // Collect all turns, deduplicate, sort
+  const seenIdx = new Set();
+  _allTurns = [];
+  for (const sp of _speakers) {
+    for (const t of (sp.turns || [])) {
+      if (!seenIdx.has(t.index)) {
+        seenIdx.add(t.index);
+        _allTurns.push(t);
+      }
+    }
+  }
+  _allTurns.sort((a, b) => a.start - b.start);
+
+  // Index lookup
+  _turnByIdx = {};
+  for (const t of _allTurns) _turnByIdx[t.index] = t;
+
+  // Ghost map
+  _ghostMap = buildGhostMap(_allTurns);
+
+  // Clear merge counts
+  document.getElementById('merge-counts').textContent = '';
+
+  renderAll();
+}
+
+function renderAll() {
+  renderSpeakers();
+  renderTranscript();
+  renderFrameGallery();
+  renderNames();
+  updateStats();
+}
+
+// ── Boot ──
+init();
 </script>
 </body>
 </html>

@@ -1055,6 +1055,8 @@ def get_review(session_id: str):
             "suggested_title": cap.get("suggested_title"),
             "suggested_org": cap.get("suggested_org"),
             "confidence": cap.get("confidence"),
+            "raw_text": cap.get("raw_text"),
+            "capture_timestamp": cap.get("timestamp"),
             "frame_url": frame_url,
             "total_speaking_time": round(speaking_time, 3),
             "turn_count": len(active_turns),
