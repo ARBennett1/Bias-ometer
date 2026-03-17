@@ -34,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # ── Env / path setup ─────────────────────────────────────────────────────────
 
 _ENV_FILE = Path(__file__).parent / ".env"
-load_dotenv(_ENV_FILE, override=False)
+load_dotenv(_ENV_FILE, override=True)
 sys.path.insert(0, str(Path(__file__).parent))
 
 logging.basicConfig(
