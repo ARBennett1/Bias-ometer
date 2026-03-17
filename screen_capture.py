@@ -56,9 +56,12 @@ log = logging.getLogger(__name__)
 _SCAN_INTERVAL_SECS: float = 2.0       # extract one frame every N seconds
 _SCAN_WINDOW_SECS: float = 60.0        # scan at most this many seconds of a turn
 _MAX_SCAN_FRAMES_REMOTE: int = 20      # cap for YouTube CDN sources
-_PRESCREEN_MIN_CHARS: int = 8          # min Tesseract char count to pass prescreen
-_BOTTOM_STRIP_FRACTION: float = 0.25   # bottom fraction of frame to crop for OCR
-_PIXEL_STD_THRESHOLD: float = 40.0    # pixel std threshold for contrast heuristic
+_MAX_VISION_CANDIDATES: int = 6        # max prescreened frames to send to Vision
+_MAX_TURNS_TO_SCAN: int = 5            # maximum number of turns to try per speaker before giving up
+_BOTTOM_STRIP_FRACTION: float = 0.25   # bottom fraction of frame to crop for prescreen
+_EDGE_DENSITY_THRESHOLD: float = 0.08  # fraction of bottom-strip rows with strong horizontal edges (lower-third detector)
+
+_CONF_RANK: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -94,7 +97,7 @@ class FrameResult:
         Human-readable error message if something went wrong.
     prescreen_method : Optional[str]
         Method used to pre-screen frames for text before Vision:
-        'tesseract' | 'pixel_heuristic' | 'none'.
+        'edge_density' | 'none'.
         None means pre-screening was not attempted (e.g. fallback frame path).
     """
     speaker_id: str
@@ -159,9 +162,10 @@ class ScreenCapture:
         Default: 20.
     text_prescreen : bool
         If True (default), pre-screen frames for lower-third text using
-        Tesseract OCR (local sources) or a pixel-contrast heuristic
-        (YouTube CDN sources) before committing to a Vision API call.
-        Set False to send all extracted frames to Vision (up to 3).
+        a horizontal edge density heuristic before committing to a Vision
+        API call.  Lower-thirds create strong horizontal edges at their top
+        and bottom borders regardless of font or transparency.
+        Set False to send all extracted frames to Vision.
     cookies_from_browser : Optional[str]
         Browser name for yt-dlp cookie auth (e.g. "safari", "chrome").
         Only needed for YouTube sources.
@@ -201,17 +205,6 @@ class ScreenCapture:
 
         # Cache resolved direct video URLs (YouTube CDN links, etc.)
         self._url_cache: dict[str, str] = {}
-
-        # Attempt to import pytesseract for OCR pre-screening
-        self._tesseract_available = False
-        if self.text_prescreen:
-            try:
-                import pytesseract
-                pytesseract.get_tesseract_version()
-                self._tesseract_available = True
-                log.info("Tesseract available — will use OCR pre-screening for local sources")
-            except Exception:
-                log.info("Tesseract not available — will use pixel heuristic for pre-screening")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -265,9 +258,10 @@ class ScreenCapture:
         Capture the first frame for every unique speaker in a
         DiarizationResult and return {speaker_id: FrameResult}.
 
-        Only the *first* turn for each speaker is processed; subsequent
-        turns are skipped.  The frame is sampled slightly after the turn
-        start to avoid capture during scene transitions.
+        Up to _MAX_TURNS_TO_SCAN turns per speaker are tried; scanning stops
+        as soon as a high or medium confidence result is found.  The frame
+        is sampled slightly after each turn start to avoid capture during
+        scene transitions.
 
         Parameters
         ----------
@@ -282,16 +276,16 @@ class ScreenCapture:
         -------
         dict[str, FrameResult]
         """
-        seen: set[str] = set()
         captures: dict[str, FrameResult] = {}
-        first_turns: dict[str, tuple] = {}  # speaker_id → (turn_start, turn_end)
 
-        # Collect first turn per speaker
+        # Collect up to _MAX_TURNS_TO_SCAN turns per speaker in order
+        speaker_turns: dict[str, list[tuple[float, float]]] = {}
         for turn in result.turns:
             sid = turn.speaker_id
-            if sid not in seen:
-                seen.add(sid)
-                first_turns[sid] = (turn.start, turn.end)
+            if sid not in speaker_turns:
+                speaker_turns[sid] = []
+            if len(speaker_turns[sid]) < _MAX_TURNS_TO_SCAN:
+                speaker_turns[sid].append((turn.start, turn.end))
 
         # Detect local audio (not YouTube, not a video file extension)
         _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
@@ -303,8 +297,9 @@ class ScreenCapture:
         is_remote = _is_youtube(video_source)
         playback_url = self._resolve_source(video_source)
 
-        for sid, (turn_start, turn_end) in first_turns.items():
+        for sid, turns_list in speaker_turns.items():
             if is_local_audio:
+                turn_start, turn_end = turns_list[0]
                 waveform_path = self._generate_waveform_image(
                     audio_path=Path(video_source),
                     speaker_id=sid,
@@ -324,18 +319,30 @@ class ScreenCapture:
                     vision_used=False,
                 )
             else:
-                log.info(
-                    f"Screen capture: {sid} — scanning "
-                    f"{turn_start:.1f}s–{min(turn_end, turn_start + self.scan_window_secs):.1f}s"
-                )
-                captures[sid] = self._scan_turn_for_best_frame(
-                    playback_url=playback_url,
-                    speaker_id=sid,
-                    turn_start=turn_start,
-                    turn_end=turn_end,
-                    frame_dir=self._frame_dir(session_id),
-                    is_remote=is_remote,
-                )
+                best_result: Optional[FrameResult] = None
+                for attempt, (turn_start, turn_end) in enumerate(turns_list):
+                    log.info(
+                        f"Screen capture: {sid} turn {attempt+1}/{len(turns_list)} — scanning "
+                        f"{turn_start:.1f}s–{min(turn_end, turn_start + self.scan_window_secs):.1f}s"
+                    )
+                    result_candidate = self._scan_turn_for_best_frame(
+                        playback_url=playback_url,
+                        speaker_id=sid,
+                        turn_start=turn_start,
+                        turn_end=turn_end,
+                        frame_dir=self._frame_dir(session_id),
+                        is_remote=is_remote,
+                    )
+                    if best_result is None:
+                        best_result = result_candidate
+                    elif _CONF_RANK.get(result_candidate.confidence or "", 0) > _CONF_RANK.get(best_result.confidence or "", 0):
+                        best_result = result_candidate
+
+                    if result_candidate.confidence in ("high", "medium"):
+                        log.info(f"  {sid}: confident result found on turn {attempt+1}, stopping scan")
+                        break
+
+                captures[sid] = best_result  # type: ignore[assignment]
 
         return captures
 
@@ -489,12 +496,11 @@ class ScreenCapture:
                 error="All frame extractions failed during scan",
             )
 
-        # 6. Sort by char_count descending, take top 3
-        prescreened.sort(key=lambda x: x[2], reverse=True)
-        candidates_to_try = prescreened[:3]
+        # 6. Take up to _MAX_VISION_CANDIDATES (no char-count sort — Vision confidence is the ranking signal)
+        candidates_to_try = prescreened[:_MAX_VISION_CANDIDATES]
+        log.info(f"  Sending {len(candidates_to_try)} candidates to Vision for {speaker_id}")
 
         # 7. Call Vision on candidates
-        _conf_rank = {"high": 3, "medium": 2, "low": 1}
         vision_results: list[FrameResult] = []
         for cand_ts, cand_path, cand_chars, cand_method in candidates_to_try:
             if self.use_vision:
@@ -513,7 +519,7 @@ class ScreenCapture:
         best = max(
             vision_results,
             key=lambda r: (
-                _conf_rank.get(r.confidence or "", 0),
+                _CONF_RANK.get(r.confidence or "", 0),
                 len(r.raw_text or ""),
             ),
         )
@@ -547,40 +553,39 @@ class ScreenCapture:
         self, frame_path: Path, is_remote: bool
     ) -> tuple[bool, int, str]:
         """
-        Pre-screen a frame for the presence of lower-third text.
-        Returns (passed, char_count, method).
+        Pre-screen a frame for the presence of lower-third text using a
+        horizontal edge density heuristic.  Lower-third graphics create strong
+        horizontal edges at their top and bottom borders regardless of font or
+        transparency.  Returns (passed, score, method) where score is an
+        integer 0–1000 (edge_density * 1000).
         """
         if not self.text_prescreen:
             return (True, 0, "none")
 
-        # Path A — Tesseract OCR (local sources only)
-        if self._tesseract_available and not is_remote:
-            try:
-                import pytesseract
-                from PIL import Image
-                img = Image.open(frame_path)
-                w, h = img.size
-                crop = img.crop((0, int(h * (1 - _BOTTOM_STRIP_FRACTION)), w, h))
-                text = pytesseract.image_to_string(crop, config="--psm 6")
-                text = text.strip()
-                char_count = len(text)
-                return (char_count >= _PRESCREEN_MIN_CHARS, char_count, "tesseract")
-            except Exception as e:
-                log.debug(f"    Tesseract prescreen failed ({e}), falling through to pixel heuristic")
-
-        # Path B — Pixel contrast heuristic
         try:
             from PIL import Image
             import numpy as np
+
             img = Image.open(frame_path)
             w, h = img.size
             crop = img.crop((0, int(h * (1 - _BOTTOM_STRIP_FRACTION)), w, h))
-            gray = crop.convert("L")
-            arr = np.array(gray)
-            std = float(arr.std())
-            return (std > _PIXEL_STD_THRESHOLD, int(std), "pixel_heuristic")
+            gray = np.array(crop.convert("L"), dtype=np.float32)
+
+            # Horizontal Sobel kernel — detects horizontal edges (top/bottom of lower-third bands)
+            row_gradients = np.abs(np.diff(gray, axis=0))   # vertical differences → horizontal edges
+            # A row is "edge-rich" if its mean gradient exceeds a threshold
+            row_means = row_gradients.mean(axis=1)
+            edge_threshold = gray.std() * 0.5   # adaptive: relative to local contrast
+            edge_rows = (row_means > edge_threshold).sum()
+            edge_density = edge_rows / max(len(row_means), 1)
+
+            passed = edge_density >= _EDGE_DENSITY_THRESHOLD
+            score = int(edge_density * 1000)   # scaled integer for logging/sorting compatibility
+            log.debug(f"    Edge density prescreen: edge_density={edge_density:.3f} passed={passed}")
+            return (passed, score, "edge_density")
+
         except Exception as e:
-            log.debug(f"    Pixel heuristic prescreen failed ({e}), passing frame through")
+            log.debug(f"    Edge density prescreen failed ({e}), passing frame through")
             return (True, 0, "none")
 
     # ──────────────────────────────────────────────────────────────────────────

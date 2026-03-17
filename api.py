@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, cast
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -107,6 +107,10 @@ class Job:
 
 _jobs: dict[str, Job] = {}
 _jobs_lock = threading.Lock()
+
+# Lightweight recapture job tracker: session_id → status dict
+_recapture_jobs: dict[str, dict] = {}
+_recapture_lock = threading.Lock()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -656,6 +660,165 @@ def _youtube_worker(job_id: str, url: str) -> None:
     except Exception as exc:
         log.exception(f"YouTube job {job_id} failed")
         _update_job(job_id, status="error", error=str(exc), completed_at=_now())
+
+
+def _recapture_worker(session_id: str, force: bool) -> None:
+    """
+    Background thread: run ScreenCapture against an existing session's
+    stored source, merge results into captures.json, and update the
+    in-memory status dict.
+
+    Parameters
+    ----------
+    session_id : str
+        The session to backfill.
+    force : bool
+        If True, re-run Vision even for speakers that already have a
+        successful identification in the existing captures.json.
+        If False (default), skip speakers where identified=True.
+    """
+    import sqlite3
+    from catalogue import SpeakerCatalogue
+    from screen_capture import ScreenCapture, save_captures, _is_youtube
+
+    def _set(status: str, pct: int = 0, detail: str = "") -> None:
+        with _recapture_lock:
+            _recapture_jobs[session_id] = {
+                "status": status,
+                "progress_pct": pct,
+                "detail": detail,
+            }
+
+    _set("running", 0, "Loading session…")
+
+    try:
+        cat = SpeakerCatalogue()
+        with sqlite3.connect(str(cat.db_path)) as cx:
+            cx.row_factory = sqlite3.Row
+            row = cx.execute(
+                "SELECT result_json, source_file FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+
+        if not row:
+            _set("error", 0, "Session not found")
+            return
+
+        source_file = row["source_file"] or ""
+        _AUDIO_EXTS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+        is_audio_only = (
+            not _is_youtube(source_file)
+            and Path(source_file).suffix.lower() in _AUDIO_EXTS
+        )
+        if not source_file:
+            _set("error", 0, "No source file recorded for this session")
+            return
+        if is_audio_only:
+            _set("error", 0, "Audio-only source — no video frames available")
+            return
+        if not _is_youtube(source_file) and not Path(source_file).exists():
+            _set("error", 0, f"Source file not found on disk: {source_file}")
+            return
+
+        # Load existing captures.json so we can honour the force flag
+        out_dir = Path("output")
+        captures_path = out_dir / session_id / "captures.json"
+        existing_captures: dict = {}
+        if captures_path.exists():
+            try:
+                existing_captures = json.loads(captures_path.read_text()).get("speakers", {})
+            except Exception:
+                existing_captures = {}
+
+        # Reconstruct a minimal object that capture_new_speakers() accepts.
+        # It only needs result.turns, each with .speaker_id, .start, .end.
+        result_data = json.loads(row["result_json"])
+        turns_raw = result_data.get("turns", [])
+
+        # If not force, exclude speakers already successfully identified
+        already_identified: set[str] = set()
+        if not force:
+            for eph_id, cap in existing_captures.items():
+                if cap.get("identified"):
+                    already_identified.add(eph_id)
+
+        # Build a minimal DiarizationResult-like namespace with only
+        # the fields capture_new_speakers() accesses: result.turns
+        from types import SimpleNamespace
+        from diarizer import Turn as DiarizerTurn
+
+        filtered_turns = [
+            DiarizerTurn(
+                speaker_id=t["speaker_id"],
+                start=t.get("start", 0.0),
+                end=t.get("end", 0.0),
+                duration=t.get("duration", 0.0),
+            )
+            for t in turns_raw
+            if t["speaker_id"] not in already_identified
+        ]
+
+        if not filtered_turns:
+            _set("complete", 100, "All speakers already identified — nothing to rescan")
+            return
+
+        mock_result = SimpleNamespace(turns=filtered_turns)
+
+        _set("running", 10, "Initialising screen capture…")
+
+        sc = ScreenCapture(
+            output_dir=str(out_dir),
+            use_vision=True,
+            scan_window_secs=60.0,
+            max_scan_frames_remote=20,
+            text_prescreen=True,
+        )
+
+        _set("running", 20, "Scanning frames…")
+        new_captures = sc.capture_new_speakers(
+            video_source=source_file,
+            result=mock_result,
+            session_id=session_id,
+        )
+
+        # Merge new captures into the existing dict (new results win)
+        merged = {**existing_captures}
+        for eph_id, frame_result in new_captures.items():
+            merged[eph_id] = {
+                "speaker_id":       frame_result.speaker_id,
+                "timestamp":        frame_result.timestamp,
+                "frame_path":       str(frame_result.frame_path) if frame_result.frame_path else None,
+                "suggested_name":   frame_result.suggested_name,
+                "suggested_title":  frame_result.suggested_title,
+                "suggested_org":    frame_result.suggested_org,
+                "confidence":       frame_result.confidence,
+                "raw_text":         frame_result.raw_text,
+                "vision_used":      frame_result.vision_used,
+                "identified":       frame_result.identified,
+                "error":            frame_result.error,
+                "prescreen_method": getattr(frame_result, "prescreen_method", None),
+            }
+
+        _set("running", 90, "Saving captures.json…")
+        save_captures(new_captures, session_id, out_dir, source_url=source_file)
+        # Overwrite with merged version if pre-existing speakers were kept
+        if existing_captures:
+            import datetime as _dt
+            merged_payload = {
+                "session_id":   session_id,
+                "source_url":   source_file,
+                "captured_at":  _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "speakers":     merged,
+            }
+            captures_path.write_text(json.dumps(merged_payload, indent=2, ensure_ascii=False))
+
+        identified = sum(1 for c in merged.values() if c.get("identified"))
+        total = len(merged)
+        _set("complete", 100, f"Done — {identified}/{total} speakers identified")
+
+    except Exception as exc:
+        log.exception(f"Recapture failed for session {session_id}")
+        _set("error", 0, str(exc))
 
 
 # ── Jobs endpoints ────────────────────────────────────────────────────────────
@@ -1459,6 +1622,35 @@ def get_turn_frame(session_id: str, turn_index: int):
 
     return FileResponse(str(frame_path), media_type="image/png",
                         headers={"Cache-Control": "max-age=3600"})
+
+
+@app.post("/review/{session_id}/recapture", summary="Backfill screen capture for an existing session")
+def recapture_session(
+    session_id: str,
+    force: bool = Query(False, description="Re-run Vision even for already-identified speakers"),
+):
+    """
+    Starts a background screen-capture pass against the session's stored
+    source_file.  Returns immediately with status 'queued'.
+    Poll GET /review/{session_id}/recapture/status for progress.
+    """
+    with _recapture_lock:
+        current = _recapture_jobs.get(session_id, {})
+        if current.get("status") == "running":
+            raise HTTPException(status_code=409, detail="Recapture already in progress for this session")
+        _recapture_jobs[session_id] = {"status": "queued", "progress_pct": 0, "detail": "Queued…"}
+
+    threading.Thread(target=_recapture_worker, args=(session_id, force), daemon=True).start()
+    return {"status": "queued", "session_id": session_id}
+
+
+@app.get("/review/{session_id}/recapture/status", summary="Poll recapture job status")
+def recapture_status(session_id: str):
+    with _recapture_lock:
+        job = _recapture_jobs.get(session_id)
+    if not job:
+        return {"status": "idle", "progress_pct": 0, "detail": ""}
+    return {"status": job["status"], "progress_pct": job["progress_pct"], "detail": job["detail"]}
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
