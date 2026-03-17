@@ -735,6 +735,11 @@ def _recapture_worker(session_id: str, force: bool) -> None:
         result_data = json.loads(row["result_json"])
         turns_raw = result_data.get("turns", [])
 
+        job_config = result_data.get("job_config", {})
+        scan_window = job_config.get("vision_scan_window", 60.0)
+        max_remote  = job_config.get("vision_max_scan_frames", 20)
+        text_pre    = job_config.get("vision_text_prescreen", True)
+
         # If not force, exclude speakers already successfully identified
         already_identified: set[str] = set()
         if not force:
@@ -769,9 +774,9 @@ def _recapture_worker(session_id: str, force: bool) -> None:
         sc = ScreenCapture(
             output_dir=str(out_dir),
             use_vision=True,
-            scan_window_secs=60.0,
-            max_scan_frames_remote=20,
-            text_prescreen=True,
+            scan_window_secs=scan_window,
+            max_scan_frames_remote=max_remote,
+            text_prescreen=text_pre,
         )
 
         _set("running", 20, "Scanning frames…")

@@ -690,7 +690,7 @@ Rules:
         image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
 
         try:
-            client = anthropic.Anthropic(api_key=self._api_key)
+            client = anthropic.Anthropic(api_key=self._api_key, base_url="https://api.anthropic.com")
             response = client.messages.create(
                 model="claude-opus-4-5",
                 max_tokens=400,

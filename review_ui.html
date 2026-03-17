@@ -1634,7 +1634,7 @@ function doRescan() {
   statusEl.style.display = 'inline';
   statusEl.textContent = 'Starting…';
 
-  api('POST', `/review/${sid}/recapture`)
+  api('POST', `/review/${sid}/recapture?force=true`)
     .then(() => {
       statusEl.textContent = 'Queued';
       _pollRescan(sid);
