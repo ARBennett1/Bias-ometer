@@ -120,6 +120,27 @@ header {
 }
 #merge-tuning-btn:hover { color: var(--text); border-color: var(--accent); }
 
+#rescan-btn {
+  background: none;
+  border: 1px solid var(--bord2);
+  color: var(--dim);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+#rescan-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+#rescan-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+#rescan-status {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
 /* ── Main layout ── */
 .panels {
   display: flex;
@@ -1201,6 +1222,10 @@ header {
   </select>
   <div class="spinner" id="spinner"></div>
   <div id="hdr-stats"></div>
+  <button id="rescan-btn" onclick="doRescan()" style="display:none" title="Re-run screen capture and Vision for this session">
+    ⟳ Rescan Frames
+  </button>
+  <span id="rescan-status" style="display:none"></span>
   <button id="merge-tuning-btn" onclick="toggleMergePanel()">⊞ Merge Tuning</button>
 </header>
 
@@ -1594,6 +1619,69 @@ async function doApplyRemerge(gapOverride) {
 // ── Compress ──
 function doCompress() {
   doApplyRemerge(9999);
+}
+
+// ── Rescan Frames ──
+let _rescanPollTimer = null;
+
+function doRescan() {
+  if (!_session) return;
+  const sid = _session.session_id;
+  const btn = document.getElementById('rescan-btn');
+  const statusEl = document.getElementById('rescan-status');
+
+  btn.disabled = true;
+  statusEl.style.display = 'inline';
+  statusEl.textContent = 'Starting…';
+
+  api('POST', `/review/${sid}/recapture`)
+    .then(() => {
+      statusEl.textContent = 'Queued';
+      _pollRescan(sid);
+    })
+    .catch(e => {
+      btn.disabled = false;
+      statusEl.style.display = 'none';
+      toast(e.message, 'err');
+    });
+}
+
+function _pollRescan(sid) {
+  if (_rescanPollTimer) clearTimeout(_rescanPollTimer);
+
+  _rescanPollTimer = setTimeout(async () => {
+    const statusEl = document.getElementById('rescan-status');
+    const btn = document.getElementById('rescan-btn');
+    try {
+      const data = await api('GET', `/review/${sid}/recapture/status`);
+      const pct = data.progress_pct || 0;
+      const detail = data.detail || '';
+
+      if (data.status === 'running' || data.status === 'queued') {
+        statusEl.textContent = detail ? `${pct}% · ${detail}` : `${pct}%`;
+        _pollRescan(sid);
+      } else if (data.status === 'complete') {
+        statusEl.textContent = detail || 'Done';
+        btn.disabled = false;
+        toast('Rescan complete — reloading session…', 'ok');
+        setTimeout(() => {
+          statusEl.style.display = 'none';
+          loadReview(sid);
+        }, 1200);
+      } else if (data.status === 'error') {
+        statusEl.textContent = `Error: ${detail}`;
+        btn.disabled = false;
+        toast(`Rescan failed: ${detail}`, 'err');
+      } else {
+        // idle — no job running
+        btn.disabled = false;
+        statusEl.style.display = 'none';
+      }
+    } catch(e) {
+      statusEl.textContent = 'Poll error';
+      btn.disabled = false;
+    }
+  }, 1500);
 }
 
 // ── Render Speakers ──
@@ -2320,7 +2408,14 @@ async function loadSessions() {
 
 async function onSessionChange() {
   const sid = document.getElementById('session-select').value;
-  if (!sid) return;
+  if (!sid) {
+    const rescanBtn = document.getElementById('rescan-btn');
+    if (rescanBtn) rescanBtn.style.display = 'none';
+    const rescanStatus = document.getElementById('rescan-status');
+    if (rescanStatus) rescanStatus.style.display = 'none';
+    if (_rescanPollTimer) { clearTimeout(_rescanPollTimer); _rescanPollTimer = null; }
+    return;
+  }
   showSpinner(true);
   try {
     await loadReview(sid);
@@ -2344,6 +2439,13 @@ async function loadReview(sid) {
   const data = await api('GET', `/review/${sid}`);
   _session = data.session || {};
   _session.session_id = sid;
+
+  const rescanBtn = document.getElementById('rescan-btn');
+  const rescanStatus = document.getElementById('rescan-status');
+  if (rescanBtn) rescanBtn.style.display = 'inline-block';
+  if (rescanStatus) { rescanStatus.style.display = 'none'; rescanStatus.textContent = ''; }
+  if (_rescanPollTimer) { clearTimeout(_rescanPollTimer); _rescanPollTimer = null; }
+
   _speakers   = data.speakers || [];
   _allEphIds  = data.all_ephemeral_ids || _speakers.map(s => s.ephemeral_id);
 
