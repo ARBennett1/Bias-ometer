@@ -77,37 +77,31 @@ def crop_region(frame_bgr: np.ndarray, region: CaptionRegion) -> np.ndarray:
 def pre_screen_passes(
     crop_bgr: np.ndarray, pre_screen: Optional[PreScreen]
 ) -> bool:
-    """
-    Check whether the top-left corner of the crop matches the expected
-    background colour.
-
-    Samples a 10×10 block starting at pixel (5, 5) to avoid edge artefacts,
-    converts the mean to RGB, and tests each channel against the tolerance.
-    Returns True (pass) when pre_screen is None.
-    """
     if pre_screen is None:
         return True
-
     if crop_bgr is None or crop_bgr.size == 0:
         return False
 
-    # Sample with a 5-pixel inset to skip edge compression artefacts
-    sample = crop_bgr[5:15, 5:15]
-    if sample.size == 0:
-        sample = crop_bgr[:10, :10]
-    if sample.size == 0:
-        # Crop is too small to sample — pass through so OCR can try
-        return True
+    h, w = crop_bgr.shape[:2]
 
-    # Mean pixel in BGR order → convert to RGB for comparison with bg_colour
-    mean_bgr = sample.mean(axis=(0, 1))
-    mean_rgb = (float(mean_bgr[2]), float(mean_bgr[1]), float(mean_bgr[0]))
+    # Sample a horizontal strip through the vertical centre of the crop.
+    # This is robust to captions with varying line counts — text tends to
+    # sit at the top and bottom of the region, leaving the centre clear.
+    strip_h = max(4, int(h * 0.30))
+    centre_y = h // 2
+    y1 = max(0, centre_y - strip_h // 2)
+    y2 = min(h, y1 + strip_h)
+    strip = crop_bgr[y1:y2, :, :]
+
+    # Median per channel: robust to any residual text pixels in the strip
+    median_bgr = np.median(strip.reshape(-1, 3), axis=0)
+    mean_rgb = (float(median_bgr[2]), float(median_bgr[1]), float(median_bgr[0]))
 
     bg = pre_screen.bg_colour
     tol = pre_screen.tolerance
     result = all(abs(mean_rgb[i] - bg[i]) <= tol for i in range(3))
     log.debug(
-        f"Pre-screen: mean_rgb={tuple(round(v) for v in mean_rgb)} "
+        f"Pre-screen: median_rgb={tuple(round(v) for v in mean_rgb)} "
         f"bg={bg} tol={tol} → {'pass' if result else 'fail'}"
     )
     return result

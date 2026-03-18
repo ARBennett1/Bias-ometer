@@ -59,11 +59,11 @@ class SourceConfig:
 
 SOURCE_REGISTRY: dict[str, SourceConfig] = {
     "bbc_politics_live": SourceConfig(
-        source_id="bbc_politics_live",
-        caption_region=CaptionRegion(x=0.05, y=0.78, w=0.45, h=0.12),
+        source_id="bbc_question_time",
+        caption_region=CaptionRegion(x=0.085, y=0.783, w=0.914, h=0.134),
         name_line_index=0,
-        pre_screen=PreScreen(bg_colour=(255, 255, 255), tolerance=30),
-        notes="White bg, red left-edge bar, bold black name on line 0, party on line 1",
+        pre_screen=PreScreen(bg_colour=(214, 218, 227), tolerance=20),
+        notes="Dark grey panel, white text. Name line 0, title line 1.",
     ),
     "default": SourceConfig(
         source_id="default",
