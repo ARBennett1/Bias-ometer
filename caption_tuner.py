@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import difflib
 import io
 import logging
 import subprocess
@@ -306,6 +307,15 @@ def _run_scan(scan_id: str, video_path: Path, cfg: SourceConfig,
     job = _scan_jobs[scan_id]
     job["total"] = len(timestamps)
     results = []
+
+    # Deduplication state
+    last_text: Optional[str] = None
+    consecutive_misses: int = 0
+    unique_results: list = []
+
+    def _normalise(lines: list[str]) -> str:
+        return " ".join(lines).lower().strip()
+
     for i, ts in enumerate(timestamps):
         if job.get("cancelled"):
             break
@@ -332,14 +342,40 @@ def _run_scan(scan_id: str, video_path: Path, cfg: SourceConfig,
                             name = r.get("name")
                 except Exception:
                     pass
-            results.append({
+
+            if ocr_lines:
+                norm = _normalise(ocr_lines)
+                if last_text is not None:
+                    ratio = difflib.SequenceMatcher(None, norm, last_text).ratio()
+                    if ratio >= 0.90:
+                        is_duplicate = True
+                        consecutive_misses = 0
+                    else:
+                        is_duplicate = False
+                        last_text = norm
+                        consecutive_misses = 0
+                else:
+                    is_duplicate = False
+                    last_text = norm
+                    consecutive_misses = 0
+            else:
+                is_duplicate = False
+                consecutive_misses += 1
+                if consecutive_misses >= 2:
+                    last_text = None
+
+            entry = {
                 "ts": ts,
                 "frame_b64": b64,
                 "crop_b64": crop_b64,
                 "prescreen_passed": prescreen_passed,
                 "ocr_lines": ocr_lines,
                 "name": name,
-            })
+                "is_duplicate": is_duplicate,
+            }
+            results.append(entry)
+            if not is_duplicate and ocr_lines:
+                unique_results.append(entry)
         except Exception as exc:
             results.append({
                 "ts": ts,
@@ -349,8 +385,10 @@ def _run_scan(scan_id: str, video_path: Path, cfg: SourceConfig,
                 "name": None,
                 "frame_b64": "",
                 "crop_b64": "",
+                "is_duplicate": False,
             })
         job["results"] = results  # live update
+        job["unique_captions"] = unique_results
     job["current"] = len(timestamps)
     job["status"] = "done"
 
@@ -380,6 +418,7 @@ def scan_start(req: ScanRequest):
         "current": 0,
         "total": len(timestamps),
         "results": [],
+        "unique_captions": [],
         "error": None,
         "cancelled": False,
     }
@@ -402,6 +441,7 @@ def scan_poll(scan_id: str):
         "current": job["current"],
         "total": job["total"],
         "results": job["results"],
+        "unique_captions": job.get("unique_captions", []),
         "error": job.get("error"),
     }
 
@@ -645,6 +685,49 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .scan-card-lines { font-family: var(--mono); font-size: 10px; color: var(--text-dim); margin-top: 2px; line-height: 1.4; }
 .scan-card-fail { font-size: 11px; color: var(--fail); margin-top: 2px; }
 
+/* ── Captions Found panel ── */
+.captions-panel {
+  flex-shrink: 0; max-height: 260px; overflow-y: auto;
+  background: var(--bg); border-top: 2px solid var(--accent2);
+}
+.captions-panel-header {
+  padding: 8px 14px; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent2); background: var(--surface);
+  border-bottom: 1px solid var(--border); position: sticky; top: 0;
+}
+.captions-list {
+  display: flex; flex-direction: column; gap: 0;
+}
+.caption-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background 0.12s;
+}
+.caption-row:hover { background: var(--surface2); }
+.caption-ts {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  color: var(--accent2); white-space: nowrap; min-width: 56px;
+}
+.caption-crop {
+  height: 36px; border-radius: 3px; border: 1px solid var(--border);
+  object-fit: cover; flex-shrink: 0;
+}
+.caption-text {
+  flex: 1; display: flex; flex-direction: column; gap: 2px;
+}
+.caption-name {
+  font-size: 13px; font-weight: 600; color: var(--pass);
+}
+.caption-lines {
+  font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  line-height: 1.4;
+}
+.caption-empty {
+  padding: 16px 14px; font-size: 12px; color: var(--text-dim);
+  font-style: italic;
+}
+
 /* ── Lightbox ── */
 .lightbox {
   display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
@@ -829,6 +912,14 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   <button class="btn-danger" id="cancelBtn" style="display:none" onclick="cancelScan()">■ Cancel</button>
   <div class="progress-bar" id="progressBar" style="display:none"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
   <span class="scan-status" id="scanStatus"></span>
+</div>
+
+<!-- Captions Found panel -->
+<div class="captions-panel" id="captionsPanel" style="display:none">
+  <div class="captions-panel-header" id="captionsPanelHeader">
+    Captions Found
+  </div>
+  <div class="captions-list" id="captionsList"></div>
 </div>
 
 <!-- Scan results -->
@@ -1210,6 +1301,8 @@ async function startScan() {
   document.getElementById('progressFill').style.width = '0%';
   document.getElementById('scanStatus').textContent = 'Starting…';
   document.getElementById('scanGrid').innerHTML = '';
+  document.getElementById('captionsList').innerHTML = '';
+  document.getElementById('captionsPanel').style.display = 'none';
   document.getElementById('scanResultsWrap').style.display = 'block';
 
   try {
@@ -1235,12 +1328,15 @@ async function pollScan() {
     document.getElementById('progressFill').style.width = pct + '%';
     document.getElementById('scanStatus').textContent =
       `${data.current} / ${data.total} frames`;
+    const uniqueCount = (data.unique_captions || []).length;
     document.getElementById('scanResultsHeader').textContent =
       `Scan Results  ·  ${data.results.length} frames  ·  ` +
       `${data.results.filter(r=>r.prescreen_passed).length} passed pre-screen  ·  ` +
-      `${data.results.filter(r=>r.name).length} names found`;
+      `${data.results.filter(r=>r.name).length} names found  ·  ` +
+      `${uniqueCount} unique`;
 
     renderScanResults(data.results);
+    renderUniqueCaptions(data.unique_captions || []);
 
     if (data.status === 'done') {
       clearInterval(pollTimer); pollTimer = null;
@@ -1283,6 +1379,56 @@ function renderScanResults(results) {
   }
 }
 
+function renderUniqueCaptions(captions) {
+  const panel = document.getElementById('captionsPanel');
+  const header = document.getElementById('captionsPanelHeader');
+  const list = document.getElementById('captionsList');
+
+  if (!captions || captions.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = 'block';
+  header.textContent = `Captions Found  ·  ${captions.length} unique`;
+
+  // Only append newly arrived rows (live update during scan)
+  const existing = list.children.length;
+  for (let i = existing; i < captions.length; i++) {
+    const c = captions[i];
+    const row = document.createElement('div');
+    row.className = 'caption-row';
+    row.onclick = () => {
+      // Seek video to this timestamp and open lightbox
+      currentTs = c.ts;
+      document.getElementById('jumpTs').value = c.ts.toFixed(2);
+      openLightbox(c);
+    };
+
+    const ts = fmtTs(c.ts);
+    const nameHtml = c.name
+      ? `<div class="caption-name">${escHtml(c.name)}</div>` : '';
+    const linesText = (c.ocr_lines || [])
+      .filter(l => !c.name || l !== c.name)   // avoid repeating name
+      .map(l => escHtml(l)).join(' · ');
+    const linesHtml = linesText
+      ? `<div class="caption-lines">${linesText}</div>` : '';
+    const cropHtml = c.crop_b64
+      ? `<img class="caption-crop"
+             src="data:image/png;base64,${c.crop_b64}" alt="crop">`
+      : '';
+
+    row.innerHTML = `
+      <span class="caption-ts">${ts}</span>
+      ${cropHtml}
+      <div class="caption-text">
+        ${nameHtml}
+        ${linesHtml}
+      </div>`;
+    list.appendChild(row);
+  }
+}
+
 async function cancelScan() {
   if (scanId) await fetch('/scan/cancel?scan_id=' + scanId, {method:'POST'});
   clearInterval(pollTimer); pollTimer = null;
@@ -1314,6 +1460,11 @@ function fmtDur(s) {
   return h > 0
     ? `${h}h ${String(m).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`
     : `${m}m ${String(sec).padStart(2,'0')}s`;
+}
+
+function fmtTs(s) {
+  const m = Math.floor(s/60), sec = Math.floor(s%60);
+  return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
 }
 
 function escHtml(s) {
